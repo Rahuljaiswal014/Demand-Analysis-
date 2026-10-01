@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # HomeMonde Demand Analysis
 
 Analyses historical and continuously updated Amazon.in sales to answer: **which** products sell, **where**,
@@ -192,3 +193,7 @@ data/reference/events.csv   festival / sale calendar shown on charts (edit freel
 2. Returns report → net demand and return rates.
 3. Amazon sale-event dates in `events.csv`, so spikes are labelled rather than just detected.
 4. After Oct-Nov 2026 is ingested, the festive uplift has two observations and yearly seasonality can enter the forecast.
+=======
+# Demand-Analysis-
+An AI-powered demand intelligence platform that analyzes sales trends, regional performance, sell-through rates, inventory levels, seasonality, and weather patterns to forecast product demand, identify lifecycle stages, and deliver actionable insights for smarter inventory planning and data-driven business decisions.
+>>>>>>> c67141bfce124db3a5674c912390651a9a15e86c
