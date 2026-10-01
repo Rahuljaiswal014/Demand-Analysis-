@@ -1,0 +1,24 @@
+data/store/
+data/raw/
+*.xlsx
+__pycache__/
+.streamlit/secrets.toml
+.env
+
+
+# Python virtual environments
+.venv/
+venv/
+
+# Python cache files
+*.pyc
+
+# Local databases
+*.db
+*.duckdb
+
+# Sensitive configuration
+.env.*
+!.env.example
+
+SKUs_Without_Fabric_Data.txt

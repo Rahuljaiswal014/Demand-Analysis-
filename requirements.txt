@@ -1,0 +1,10 @@
+pandas>=2.2
+numpy
+openpyxl
+pyarrow
+duckdb
+requests
+streamlit>=1.46
+plotly
+anthropic>=1.0
+scikit-learn

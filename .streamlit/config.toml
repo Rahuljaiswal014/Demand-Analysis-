@@ -1,0 +1,22 @@
+[server]
+address = "localhost"      # sales data stays on this machine; change deliberately if you want to share on the LAN
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+# Two themes. The viewer picks Light / Dark / Use system setting under the ⋮ menu > Settings; the charts follow
+# whichever is showing (app.py reads st.context.theme). Colours match the chart palettes in app.py.
+[theme]
+primaryColor = "#2a78d6"                 # one accent, the same blue as the first chart series
+
+[theme.light]
+backgroundColor = "#f6f6f3"              # page
+secondaryBackgroundColor = "#ecebe6"     # sidebar, inputs
+textColor = "#0b0b0b"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"
