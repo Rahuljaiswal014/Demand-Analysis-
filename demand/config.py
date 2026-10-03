@@ -18,6 +18,33 @@ def _load_dotenv(path: Path) -> None:
 
 
 _load_dotenv(ROOT / ".env")                # holds ANTHROPIC_API_KEY; never committed (see .gitignore)
+
+
+def _cloud_secret(name: str) -> str | None:
+    """A setting from Streamlit's own secrets store, or None. Never raises: there is no secrets store when
+    the app runs locally, and reading one that does not exist is not an error."""
+    try:
+        import streamlit as st
+        return st.secrets.get(name) or None
+    except Exception:
+        return None
+
+
+def setting(name: str, default: str = "") -> str:
+    """A setting from Streamlit's secrets (Community Cloud), else the environment (which .env feeds), else `default`.
+
+    Community Cloud keeps secrets in the app's dashboard and hands them to the app only through st.secrets,
+    never as environment variables, so os.environ on its own finds nothing once the app is deployed.
+    """
+    value = _cloud_secret(name) or os.environ.get(name) or ""
+    value = str(value).strip().strip('"').strip("'")
+    return value or default
+
+
+ANTHROPIC_API_KEY = setting("ANTHROPIC_API_KEY")
+if ANTHROPIC_API_KEY:                     # the Anthropic SDK reads the key from the environment
+    os.environ.setdefault("ANTHROPIC_API_KEY", ANTHROPIC_API_KEY)
+
 RAW_DIR = ROOT / "data" / "raw"            # drop new Amazon "All Orders" reports here
 STORE_DIR = ROOT / "data" / "store"        # cleaned parquet store (generated)
 REF_DIR = ROOT / "data" / "reference"      # editable reference tables (events calendar)
@@ -41,9 +68,9 @@ TIMEZONE = "Asia/Kolkata"                  # report timestamps are UTC; business
 #                  but it only works on a computer where `claude` is installed and logged in
 #   api          - the Anthropic API with ANTHROPIC_API_KEY: pay-as-you-go, works on any server, right for a team
 #   auto         - claude_code when the CLI is installed, otherwise api
-AI_BACKEND = os.environ.get("AI_BACKEND", "auto").strip().lower()
+AI_BACKEND = setting("AI_BACKEND", "auto").strip().lower()
 CLAUDE_MODEL = "claude-opus-5"                                   # api backend
-CLAUDE_CODE_MODEL = os.environ.get("CLAUDE_CODE_MODEL", "sonnet")  # claude_code backend: sonnet is quick and light on usage limits
+CLAUDE_CODE_MODEL = setting("CLAUDE_CODE_MODEL", "sonnet")        # claude_code backend: sonnet is quick and light on usage limits
 ANALYST_DB = STORE_DIR / "analyst.duckdb"
 
 # Supply lead times used when advice says "order by" / "be at Amazon by". PLACEHOLDERS: set these to HomeMonde's real figures.
@@ -51,7 +78,7 @@ PRODUCTION_WEEKS = 8        # from placing a production order to finished goods
 INBOUND_WEEKS = 2           # from dispatch to stock being live at Amazon (FBA receive)
 
 # Outsourced (bought-in) products. PLACEHOLDERS except OUTSOURCE_AVAILABLE's default: set them to HomeMonde's real figures.
-OUTSOURCE_AVAILABLE = os.environ.get("OUTSOURCE_AVAILABLE", "max")   # how ready and virtual combine: max | sum | ready | virtual
+OUTSOURCE_AVAILABLE = setting("OUTSOURCE_AVAILABLE", "max")   # how ready and virtual combine: max | sum | ready | virtual
 OUTSOURCE_LEAD_WEEKS = 4    # from ordering from the outside maker to stock being sellable
 OUTSOURCE_REVIEW_WEEKS = 8  # a reorder should cover demand for the lead time plus this many weeks
 

@@ -1,6 +1,13 @@
-data/store/
+# Raw Amazon reports: the source workbooks stay on this machine and are never committed.
 data/raw/
 *.xlsx
+SKUs_Without_Fabric_Data.txt
+
+# The cleaned parquet store under data/store/ IS committed, so the deployed app ships with
+# exactly the dataset it reads locally. Only the rebuildable cache inside it is ignored.
+data/store/*.duckdb
+data/store/*.building
+
 __pycache__/
 .streamlit/secrets.toml
 .env
@@ -20,5 +27,3 @@ venv/
 # Sensitive configuration
 .env.*
 !.env.example
-
-SKUs_Without_Fabric_Data.txt

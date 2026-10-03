@@ -1,10 +1,13 @@
-pandas>=2.2
-numpy
-openpyxl
-pyarrow
-duckdb
-requests
-streamlit>=1.46
-plotly
-anthropic>=1.0
-scikit-learn
+# Pinned to the versions this dashboard is developed and tested against, so a hosted deploy runs the
+# same code on the same libraries as `streamlit run app.py` on this machine. All of them ship Linux wheels
+# for Python 3.12, which is what Community Cloud uses by default. Bump a line here and locally together.
+pandas==3.0.6
+numpy==2.5.3
+openpyxl==3.1.5            # reads the Amazon "All Orders" .xlsx reports on ingest
+pyarrow==25.0.1            # parquet engine for data/store
+duckdb==1.5.5              # read-only SQL database Claude queries in the AI analyst
+requests==2.32.3           # Open-Meteo weather download
+streamlit==1.64.0
+plotly==7.1.0
+anthropic==1.7.0
+scikit-learn==1.9.1        # the forecast model behind "Future years (ML)"

@@ -1,5 +1,7 @@
 [server]
-address = "localhost"      # sales data stays on this machine; change deliberately if you want to share on the LAN
+# No `address` here on purpose. Unset means Streamlit listens on every interface, which is what both
+# `http://localhost:8501` on this machine and Streamlit Community Cloud need. Pinning it to
+# "localhost" makes the server unreachable from outside the machine, which is what a hosted deploy returns as a 404.
 headless = true
 
 [browser]

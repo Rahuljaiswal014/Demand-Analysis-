@@ -1582,10 +1582,9 @@ elif page == "Data":
     c[1].metric("Demand lines", f"{int(d_all['is_demand'].sum()):,}")
     c[2].metric("Cancelled lines", f"{int(d_all['is_cancelled'].sum()):,}")
     c[3].metric("Non-Amazon (MCF) lines", f"{int((~d_all['is_amazon']).sum()):,}")
-    import os
     st.markdown(f"**Claude features run through:** {_ai_label()}  \n"
-                "**Anthropic API key:** " + ("found (used only if `AI_BACKEND=api` is set in `.env`, or on a computer without Claude Code)"
-                                             if os.environ.get("ANTHROPIC_API_KEY") else "not set (only needed for `AI_BACKEND=api`)"))
+                "**Anthropic API key:** " + ("found (used only if `AI_BACKEND=api` is set, or on a computer without Claude Code)"
+                                             if cfg.ANTHROPIC_API_KEY else "not set (only needed for `AI_BACKEND=api`)"))
     st.markdown("**Fabric sheet:** " + (f"loaded ({len(FB.load_fabric()):,} SKUs, {FB.load_fabric()['fabric_code'].nunique()} fabric codes)" if cfg.FABRIC_PARQUET.exists()
                                         else "not loaded. Put `Fabric Consumption*.xlsx` in the project folder and run `python -m demand.ingest`."))
     if cfg.OUTSOURCE_PARQUET.exists():

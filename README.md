@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # HomeMonde Demand Analysis
 
 Analyses historical and continuously updated Amazon.in sales to answer: **which** products sell, **where**,
@@ -11,6 +10,36 @@ pip install -r requirements.txt
 python -m demand.ingest          # reads new report files, rebuilds the store, fetches missing weather
 streamlit run app.py             # dashboard at http://localhost:8501
 ```
+
+## Deploy it on Streamlit Community Cloud
+
+The repository is set up to deploy as it stands, with the same dataset: the cleaned parquet store in
+`data/store/` is committed, so the hosted app reads exactly the same numbers as the local one. The source
+workbooks (`*.xlsx`) stay out of git, so to refresh the data, run `python -m demand.ingest` locally and push
+`data/store/`.
+
+In the [Community Cloud workspace](https://share.streamlit.io) → **Create app** → **Yup, I have an app**:
+
+| Setting | Value |
+| --- | --- |
+| Repository | `Rahuljaiswal014/Demand-Analysis-` |
+| Branch | `main` |
+| Entry point | `app.py` |
+| Python version | `3.12` (the default; `requirements.txt` is pinned to versions with 3.12 Linux wheels) |
+
+Then **Advanced settings → Secrets**, if the Claude features should work on the hosted app:
+
+```toml
+ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+Secrets are read from Streamlit's secrets store when the app is hosted and from `.env` when it runs locally;
+`AI_BACKEND` can be set the same way (`auto` on a server resolves to the API, since the `claude` CLI is not
+installed there). The **Data** page shows which route is active and whether the key was found.
+
+Two things that make a deploy answer 404, both already handled here: the entry point above must be exactly
+`app.py` in the repository root, and `.streamlit/config.toml` must not pin `server.address` to `localhost`,
+which would stop the server from answering anything but this machine.
 
 **Claude features, two routes** (`AI_BACKEND` in `.env`: `auto` (default), `claude_code`, or `api`):
 
@@ -193,7 +222,3 @@ data/reference/events.csv   festival / sale calendar shown on charts (edit freel
 2. Returns report → net demand and return rates.
 3. Amazon sale-event dates in `events.csv`, so spikes are labelled rather than just detected.
 4. After Oct-Nov 2026 is ingested, the festive uplift has two observations and yearly seasonality can enter the forecast.
-=======
-# Demand-Analysis-
-An AI-powered demand intelligence platform that analyzes sales trends, regional performance, sell-through rates, inventory levels, seasonality, and weather patterns to forecast product demand, identify lifecycle stages, and deliver actionable insights for smarter inventory planning and data-driven business decisions.
->>>>>>> c67141bfce124db3a5674c912390651a9a15e86c
