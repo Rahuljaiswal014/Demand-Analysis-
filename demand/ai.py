@@ -155,11 +155,32 @@ def backend_label() -> str:
             else f"Anthropic API, {cfg.CLAUDE_MODEL} (pay-as-you-go)")
 
 
+def store_signature() -> str:
+    """What the analyst database was built from: name, size and row count of each parquet store. Unlike file times,
+    this survives a git clone (Streamlit Community Cloud checks the repository out fresh, so every file is 'new')."""
+    import pyarrow.parquet as pq
+    return "|".join(f"{f.name}:{f.stat().st_size}:{pq.read_metadata(f).num_rows}"
+                    for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET) if f.exists())
+
+
+def _built_from(path) -> str | None:
+    """The signature stored inside an existing database, or None when it has none (built by an older version) or cannot be read."""
+    try:
+        con = duckdb.connect(str(path), read_only=True)
+    except duckdb.Error:
+        return None
+    try:
+        return con.execute("SELECT signature FROM _built_from").fetchone()[0]
+    except duckdb.Error:
+        return None
+    finally:
+        con.close()
+
+
 def ensure_database():
-    """Build the on-disk analyst database if it is missing or older than any store it is built from. Returns its path."""
+    """Build the on-disk analyst database if it is missing or was built from different store contents. Returns its path."""
     path = cfg.ANALYST_DB
-    stores = [f for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET) if f.exists()]
-    if path.exists() and path.stat().st_mtime >= max(f.stat().st_mtime for f in stores):
+    if path.exists() and _built_from(path) == store_signature():
         return path
     tmp = path.with_suffix(".building")
     tmp.unlink(missing_ok=True)
@@ -249,6 +270,7 @@ def build_database(path: str = ":memory:") -> duckdb.DuckDBPyConnection:
         con.register("_frame", frame)
         con.execute(f"CREATE TABLE {name} AS SELECT * FROM _frame")
         con.unregister("_frame")
+    con.execute("CREATE TABLE _built_from AS SELECT ? AS signature, now() AS built_at", [store_signature()])
     # the model writes the SQL, so the connection cannot touch the filesystem or network
     con.execute("SET enable_external_access = false")
     con.execute("SET lock_configuration = true")

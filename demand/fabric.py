@@ -195,10 +195,17 @@ def missing_skus(pf: pd.DataFrame, d: pd.DataFrame, products: pd.DataFrame) -> p
 
 
 # ------------------------------------------------------------------ consumption
+# Order-line detail the fabric views never read. Leaving it out of the merged table keeps it to about a third of the size,
+# which matters on a hosted server where every open page holds its own copy.
+_LINE_DETAIL = ["product_name", "temp_band", "rain_band", "source_file", "order_id", "order_item_id", "district_source", "sales_channel", "city",
+                "order_status", "fulfillment", "pin", "ts", "last_updated", "item_price", "promo_discount", "unit_price", "has_promo", "is_business",
+                "is_cancelled", "is_demand", "is_amazon"]
+
+
 def with_metres(d: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
     """Demand rows + metres (units x metres per unit) and the fabric facts; metres is NaN where the fabric is unknown."""
     cols = ["asin", "fabric_code", "fabric_type", "fabric_family", "fabric_product", "product_type", "colour", "size", "metres_per_unit", "fabric_source"]
-    x = d.merge(pf[cols], on="asin", how="left")
+    x = d.drop(columns=[c for c in _LINE_DETAIL if c in d.columns]).merge(pf[cols], on="asin", how="left")
     x["metres"] = x["quantity"] * x["metres_per_unit"]
     x["fabric_key"] = x["fabric_code"].where(x["fabric_source"] != "inferred: size rule", UNKNOWN)
     return x

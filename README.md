@@ -13,29 +13,54 @@ streamlit run app.py             # dashboard at http://localhost:8501
 
 ## Deploy it on Streamlit Community Cloud
 
-The repository is set up to deploy as it stands, with the same dataset: the cleaned parquet store in
-`data/store/` is committed, so the hosted app reads exactly the same numbers as the local one. The source
-workbooks (`*.xlsx`) stay out of git, so to refresh the data, run `python -m demand.ingest` locally and push
-`data/store/`.
+The repository deploys as it stands, with the same dataset the local dashboard reads: the cleaned store in
+`data/store/` (parquet files and the analyst database) and the source workbooks in `data/raw/` are committed.
+Working copies of the workbooks in the project root are not (see `.gitignore`), so nothing is stored twice.
 
-In the [Community Cloud workspace](https://share.streamlit.io) → **Create app** → **Yup, I have an app**:
+**Deploy once.** In the [Community Cloud workspace](https://share.streamlit.io) → **Create app** → **Yup, I have an app**:
 
 | Setting | Value |
 | --- | --- |
-| Repository | `Rahuljaiswal014/Demand-Analysis-` |
+| Repository | `Rahuljaiswal014/Demand-Analysis-` (keep it **private**: it holds sales data; a private repository makes a private app) |
 | Branch | `main` |
-| Entry point | `app.py` |
-| Python version | `3.12` (the default; `requirements.txt` is pinned to versions with 3.12 Linux wheels) |
+| Main file path | `app.py` |
+| Python version (Advanced settings) | `3.12`: `requirements.txt` is pinned to versions with 3.12 Linux wheels, and the app has been run on 3.12 against those pins |
+| Secrets (Advanced settings) | paste from `.streamlit/secrets.example.toml`; at least `APP_PASSWORD` |
 
-Then **Advanced settings → Secrets**, if the Claude features should work on the hosted app:
+Secrets are read from Streamlit's secrets store when hosted and from `.env` when the app runs locally:
 
 ```toml
-ANTHROPIC_API_KEY = "sk-ant-..."
+APP_PASSWORD = "..."            # every visitor is asked for it once per browser session; recommended, the dashboard holds sales data
+ANTHROPIC_API_KEY = "sk-ant-..."  # only if the Claude features should work on the hosted copy (pay-as-you-go API credit)
 ```
 
-Secrets are read from Streamlit's secrets store when the app is hosted and from `.env` when it runs locally;
-`AI_BACKEND` can be set the same way (`auto` on a server resolves to the API, since the `claude` CLI is not
-installed there). The **Data** page shows which route is active and whether the key was found.
+`AI_BACKEND` can be set the same way; `auto` on a server resolves to the API, since the `claude` CLI is not installed there.
+The **Data** page shows which route is active and whether the key was found. Viewers: the free tier allows one private
+app; share it by inviting e-mail addresses from the app's **Share** menu. The app sleeps after 12 hours without visitors
+and any viewer can wake it.
+
+**Refresh the data.** The hosted app reads only what is in git, so a new month goes in locally and is pushed:
+
+```bash
+python -m demand.ingest            # new All Orders report in data/raw/, updated fabric or outsource sheet
+python -m demand.sql "SELECT 1"    # rebuilds data/store/analyst.duckdb for the new data (about 40 s)
+git add data/store data/raw
+git commit -m "Data to <month>"
+git push                           # Community Cloud redeploys from main within a minute or two
+```
+
+An upload on the hosted **Data** page works, but lasts only until the app next restarts; the push is what makes it permanent.
+The analyst database carries a signature of the parquet files it was built from, so a fresh checkout does not rebuild it;
+if the signature no longer matches (data pushed without the rebuild step) the app rebuilds it on the first AI analyst use,
+which takes about a minute. GitHub refuses single files over 100 MB and the database is ~80 MB today: if it grows past that,
+add it to `.gitignore` and let the hosted app build it on first use instead.
+
+**Resources.** Community Cloud gives an app 2.7 GB of memory. The base tables are held once per server
+(`st.cache_resource` in `app.py`; every page reads them without copying) and each run starts by releasing the previous run's
+memory. Measured on Python 3.12 with the pinned requirements, loading every page in turn from fresh browser sessions: 0.6 GB
+after the first page, 1.7 GB resting after sixteen page loads, 2.3 GB at the highest moment (the Fabric consumption page is the
+heaviest, about 0.5 GB on top of the rest). That fits one or two people using it at the same time; if the app ever shows
+"over its resource limits", reboot it from **Manage app** and check in the logs which page was open.
 
 Two things that make a deploy answer 404, both already handled here: the entry point above must be exactly
 `app.py` in the repository root, and `.streamlit/config.toml` must not pin `server.address` to `localhost`,

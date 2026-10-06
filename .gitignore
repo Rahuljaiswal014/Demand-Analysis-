@@ -1,5 +1,8 @@
-# Raw Amazon reports: committed so the deployed app has access to the datasets.
-SKUs_Without_Fabric_Data.txt
+# Workbooks in the project root are working copies and generated lists (Missing_Fabric_Data.xlsx, SKUs_Without_Fabric_Data.*).
+# The copies the tool ingests live in data/raw/ and are committed, together with the cleaned store, so a hosted deploy
+# carries the whole dataset without the duplicates.
+/*.xlsx
+/*.txt
 
 # The cleaned parquet store under data/store/ IS committed, so the deployed app ships with
 # exactly the dataset it reads locally. Only the rebuildable cache inside it is ignored.

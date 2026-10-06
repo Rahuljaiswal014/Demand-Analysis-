@@ -1,4 +1,6 @@
 """HomeMonde demand analysis dashboard.   Run:  streamlit run app.py"""
+import gc
+import hmac
 import re
 
 import numpy as np
@@ -15,6 +17,26 @@ from demand import predict as ML
 from demand import sourcing as SRC
 
 st.set_page_config(page_title="HomeMonde Demand Analysis", page_icon="📈", layout="wide")
+gc.collect()      # plotly figures and big frames from the previous run sit in reference cycles; free them before this run allocates
+try:              # pandas 3 keeps string columns in Arrow memory, which is handed back to the OS only on request
+    import pyarrow as _pa
+    _pa.default_memory_pool().release_unused()
+except Exception:
+    pass
+
+# Optional viewer gate for a hosted copy. Set APP_PASSWORD in Streamlit's secrets (Community Cloud) or in .env and every
+# browser session is asked for it once. Left unset, as on this machine, the dashboard opens straight away.
+_GATE = cfg.setting("APP_PASSWORD")
+if _GATE and not st.session_state.get("_unlocked"):
+    st.title("HomeMonde Demand Analysis")
+    with st.form("gate"):
+        _pw = st.text_input("Password", type="password", help="Ask the HomeMonde founder's office for access.")
+        if st.form_submit_button("Open dashboard"):
+            if hmac.compare_digest(_pw.encode(), _GATE.encode()):
+                st.session_state["_unlocked"] = True
+                st.rerun()
+            st.error("That password is not right.")
+    st.stop()
 
 # ------------------------------------------------------------------ chart system
 # Categorical hues are assigned in this fixed order and follow the entity, never its rank.
@@ -197,13 +219,19 @@ def _mtime() -> float:
     return max((f.stat().st_mtime for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET) if f.exists()), default=0.0)
 
 
-@st.cache_data(show_spinner="Loading order store …")
+@st.cache_resource(show_spinner="Loading order store …")
 def load(mtime: float):
+    """The four base tables, held once for the whole server. cache_resource hands every run the same objects, where
+    cache_data would keep a pickled copy and unpickle another ~600 MB for each rerun; the tables are read-only by
+    convention (every page filters or copies, nothing assigns into them), which the page test checks by hashing them."""
     orders, products, weather = A.load_orders(), A.load_products(), A.load_weather()
     attrs = products[["asin", "main_sku", "curtain_type", "curtain_length_ft", "pack_size"]]
     d = A.add_context(A.demand(orders), weather).merge(attrs, on="asin", how="left")
     d["curtain_length"] = d["curtain_length_ft"].map(lambda v: f"{int(v)} ft" if pd.notna(v) else None)
     d["sourcing"] = d["asin"].map(SRC.build(products, orders)[1].set_index("asin")["sourcing"]).fillna(SRC.UNCLASSIFIED)
+    # Only the Data page's reconciliation and the outsource SKU matching read the raw order lines; keeping just their columns
+    # resident saves ~150 MB on the server. The analyst database is built from the full store separately.
+    orders = orders[["date", "sku", "asin", "quantity", "revenue", "is_demand", "is_cancelled", "is_amazon", "source_file"]]
     return orders, d, products, weather
 
 
@@ -348,7 +376,7 @@ if f_districts:
     mask &= D_ALL["district"].isin(f_districts)
 if f_sourcing:
     mask &= D_ALL["sourcing"].isin(f_sourcing)
-D = D_ALL[mask]
+D = D_ALL if bool(mask.all()) else D_ALL[mask]          # no filter, no copy: the unfiltered view is the common case
 FILT = (str(start), str(end), tuple(f_cats), tuple(f_regions), tuple(f_states), tuple(f_districts), tuple(f_sourcing))
 TITLES = PRODUCTS.set_index("asin")["title"]
 SKU_TITLE = D_ALL.drop_duplicates("sku").set_index("sku")["asin"].map(TITLES)
@@ -1229,14 +1257,62 @@ elif page == "Fabric consumption":
               column_config={"growth_4w_%": st.column_config.NumberColumn("4 wk growth %", format="%+.1f")})
     with tabs[2]:
         dim = st.segmented_control("Series", ["fabric_type", "fabric_family", "fabric_code"], default="fabric_type", format_func=pretty, key="fab_dim")
-        mm = FB.monthly(dm, dim, top=8)
-        wk = A.weekly_matrix(_known_k := known if dim != "fabric_code" else known[~known["fabric_code"].isin([FB.UNKNOWN, "(none)"])], dim)
+        mm = FB.monthly(dm, dim, top=None)                       # every row of the series, not only the largest
+        _known_k = known if dim != "fabric_code" else known[~known["fabric_code"].isin([FB.UNKNOWN, "(none)"])]
         wkm = A.weekly_matrix(_known_k.assign(quantity=_known_k["metres"]), dim).T
-        top = wkm.sum().sort_values(ascending=False).index[:8]
-        show(lines(wkm[top], {c: P["series"][i % 8] for i, c in enumerate(top)}, 380, ytitle="Metres / week"))
-        st.subheader("Metres by month")
-        mm.columns = [pd.Period(c).strftime("%b %y") for c in mm.columns]
-        table(mm.style.format("{:,.0f}"))
+        months = [pd.Period(c).strftime("%b %y") for c in mm.columns]
+        mm.columns = months
+        if dim != "fabric_code":
+            top = wkm.sum().sort_values(ascending=False).index[:8]
+            show(lines(wkm[top], {c: P["series"][i % 8] for i, c in enumerate(top)}, 380, ytitle="Metres / week"))
+            st.subheader("Metres by month")
+            mm.insert(0, "total_metres", mm.sum(axis=1))
+            table(mm.reset_index(), hide_index=True, column_config={c: st.column_config.NumberColumn(c, format="localized") for c in months}
+                  | {"total_metres": st.column_config.NumberColumn("Total metres", format="localized")})
+        else:
+            # every fabric code on the sheet, with its details, including codes nothing in this view consumed
+            sheet = FB.load_fabric()
+            first = lambda s: s.dropna().mode().iat[0] if s.notna().any() else None
+            info = sheet.groupby("fabric_code").agg(fabric_type=("fabric_type", first), fabric_family=("fabric_family", first),
+                                                    colours=("colour", lambda s: ", ".join(sorted(s.dropna().unique()))), skus_on_sheet=("sku", "size"))
+            allc = info.join(bf[["units", "products"]]).join(mm, how="left")
+            allc[["units", "products"] + months] = allc[["units", "products"] + months].fillna(0)
+            allc.insert(4, "total_metres", allc[months].sum(axis=1))
+            f = st.columns([2, 2, 2, 2, 2])
+            p_type = f[0].multiselect("Fabric type", sorted(allc["fabric_type"].dropna().unique()), placeholder="All types", key="fot_type")
+            p_fam = f[1].multiselect("Fabric family", sorted(allc["fabric_family"].dropna().unique()), placeholder="All families", key="fot_fam")
+            find = f[2].text_input("Search code or colour", placeholder="e.g. FAB-0030 or Beige", key="fot_find").strip().upper()
+            order = f[3].selectbox("Order by", ["Total metres (high to low)", "Fabric code (A to Z)", f"Latest month ({months[-1]})", "Fabric type, then metres"], key="fot_order")
+            f[4].markdown("<div style='height:1.9rem'></div>", unsafe_allow_html=True)      # line the toggle up with the inputs beside it
+            used_only = f[4].toggle("Consumed only", value=False, key="fot_used", help="Hide fabric codes with no consumption in this view.")
+            view = allc
+            if p_type:
+                view = view[view["fabric_type"].isin(p_type)]
+            if p_fam:
+                view = view[view["fabric_family"].isin(p_fam)]
+            if find:
+                view = view[view.index.str.upper().str.contains(find, regex=False) | view["colours"].str.upper().str.contains(find, regex=False)]
+            if used_only:
+                view = view[view["total_metres"] > 0]
+            view = (view.sort_index() if order.startswith("Fabric code") else view.sort_values(months[-1], ascending=False) if order.startswith("Latest")
+                    else view.sort_values(["fabric_type", "total_metres"], ascending=[True, False]) if order.startswith("Fabric type")
+                    else view.sort_values("total_metres", ascending=False))
+            top = [c for c in view.index if c in wkm.columns and view.at[c, "total_metres"] > 0][:8] if not order.startswith("Total") else \
+                  [c for c in view.index if c in wkm.columns][:8]
+            if top:
+                with card("Metres per week", f"the first {len(top)} fabric codes of the table below (a chart of all {len(view)} would be unreadable)"):
+                    show(lines(wkm[top], {c: P["series"][i % 8] for i, c in enumerate(top)}, 360, ytitle="Metres / week"))
+            st.subheader(f"Metres by month, all fabric codes ({len(view)} of {len(allc)})")
+            st.markdown(f"<div class='card-note'>{view['total_metres'].sum():,.0f} m in this view · {int((view['total_metres'] > 0).sum())} codes consumed · "
+                        f"{int((view['total_metres'] == 0).sum())} on the sheet with no consumption here</div>", unsafe_allow_html=True)
+            table(view.reset_index(), hide_index=True, height=min(720, 35 * (len(view) + 1) + 4), column_config={
+                "fabric_code": st.column_config.TextColumn("Fabric code", pinned=True), "colours": st.column_config.TextColumn("Colours", width="medium"),
+                "skus_on_sheet": st.column_config.NumberColumn("SKUs on sheet"), "units": st.column_config.NumberColumn("Units sold", format="localized"),
+                "products": st.column_config.NumberColumn("Products sold"), "total_metres": st.column_config.NumberColumn("Total metres", format="localized")}
+                | {c: st.column_config.NumberColumn(c, format="localized") for c in months})
+            st.download_button("Download this table (CSV)", view.round(0).to_csv().encode(), "fabric_codes_metres_by_month.csv", "text/csv")
+            st.caption("One row per fabric code on the fabric sheet, with its type, family, colours and metres consumed each month. The sidebar filters "
+                       "(period, category, place, sourcing) change the metres; the filters above choose which codes are listed.")
     with tabs[3]:
         horizon = st.slider("Weeks ahead", 4, 16, 12, key="fab_h")
         req = fabric_requirement(_mtime(), _fab_mtime(), FILT, horizon)
@@ -1608,7 +1684,9 @@ elif page == "Data":
     st.subheader("Add a new report")
     st.markdown("Download **Reports → Fulfilment / Orders → All Orders** from Seller Central for the new month and upload it here "
                 f"(or drop it into `{cfg.RAW_DIR}` and run `python -m demand.ingest`). Re-uploading a month is safe: newer order statuses replace older ones.")
-    up = st.file_uploader("All Orders report", type=["xlsx", "txt", "tsv", "csv"])
+    up = st.file_uploader("All Orders report", type=["xlsx", "txt", "tsv", "csv"],
+                          help="On the hosted copy (Streamlit Community Cloud) an upload lasts only until the app next restarts. "
+                               "To update it for good, ingest locally, commit `data/store/` and push.")
     if up and st.button("Ingest file"):
         from demand.ingest import ingest
         from demand.weather import update_weather
