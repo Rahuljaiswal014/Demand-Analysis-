@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>screen probe</title></head>
+<body>
+<script>
+  // Tiny Streamlit component: reports the browser window width back to the app so app.py can open the phone
+  // layout on a narrow screen. It renders nothing. Uses Streamlit's component message protocol directly, so it
+  // needs no build step.
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
+  }
+  send("streamlit:componentReady", { apiVersion: 1 });
+  send("streamlit:setFrameHeight", { height: 0 });
+  var width;
+  try { width = window.parent.innerWidth; } catch (e) { width = window.innerWidth; }
+  send("streamlit:setComponentValue", { value: width, dataType: "json" });
+</script>
+</body>
+</html>

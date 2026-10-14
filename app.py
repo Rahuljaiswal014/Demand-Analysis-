@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from demand import analytics as A
 from demand import config as cfg
@@ -16,7 +17,14 @@ from demand import fabric as FB
 from demand import predict as ML
 from demand import sourcing as SRC
 
-st.set_page_config(page_title="HomeMonde Demand Analysis", page_icon="📈", layout="wide")
+_screen_probe = components.declare_component("screen_probe", path=str(cfg.ROOT / "demand" / "screen_probe"))
+
+# Two layouts from one app. ?view=phone is the compact single-column view for phones (chosen automatically on a narrow
+# screen, see the detector below); ?view=desktop keeps the full dashboard even on a phone.
+VIEW = st.query_params.get("view", "")
+PHONE = VIEW == "phone"
+st.set_page_config(page_title="HomeMonde Demand" if PHONE else "HomeMonde Demand Analysis", page_icon="📈", layout="wide",
+                   initial_sidebar_state="collapsed" if PHONE else "auto")
 gc.collect()      # plotly figures and big frames from the previous run sit in reference cycles; free them before this run allocates
 try:              # pandas 3 keeps string columns in Arrow memory, which is handed back to the OS only on request
     import pyarrow as _pa
@@ -88,6 +96,34 @@ st.markdown("""
   .card-note { font-size: 0.82rem; color: var(--muted); margin-bottom: 4px; }
   [data-testid="stCaptionContainer"] { color: var(--muted); }
 </style>""", unsafe_allow_html=True)
+
+if PHONE:
+    st.markdown("""
+<style>
+  .block-container { padding: 0.6rem 0.8rem 5rem 0.8rem !important; max-width: 100% !important; }
+  .stAppDeployButton { display: none; }
+  h3 { font-size: 1.25rem !important; margin-top: 0 !important; }
+  .ph-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0 10px 0; }
+  .ph-tile { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 10px 12px; }
+  .ph-label { font-size: 0.74rem; color: var(--muted); }
+  .ph-value { font-size: 1.25rem; font-weight: 650; line-height: 1.3; }
+  .ph-note { font-size: 0.74rem; color: var(--muted); }
+  [data-testid="stExpander"] summary p { font-size: 1rem; font-weight: 600; }
+  [data-testid="stExpander"] { border-radius: 12px; }
+  [data-testid="stDataFrame"] { font-size: 0.86rem; }
+  .ph-qr svg { width: 168px; height: 168px; background: #fff; padding: 8px; border-radius: 10px; }
+  .ph-link { display: inline-block; padding: 8px 14px; border: 1px solid var(--card-border); border-radius: 10px; margin: 4px 6px 4px 0; }
+</style>""", unsafe_allow_html=True)
+elif not VIEW and "screen_w" not in st.session_state:
+    # First visit without an explicit view: a tiny component (demand/screen_probe) reports the window width; a phone-width
+    # screen is switched to the compact view once. Any later choice (?view=desktop / ?view=phone) sticks, because the URL
+    # then carries it. The probe returns None on the run that mounts it and the width on the rerun it triggers.
+    _screen_w = _screen_probe(key="screen_probe", default=None)
+    if _screen_w is not None:
+        st.session_state["screen_w"] = int(_screen_w)
+        if st.session_state["screen_w"] < 768:
+            st.query_params["view"] = "phone"
+            st.rerun()
 
 
 def style(fig: go.Figure, height=340, legend=True, ytitle=None, xtitle=None) -> go.Figure:
@@ -344,59 +380,6 @@ HIST_SPAN = f"{D_ALL['date'].min():%b %Y} to {D_ALL['date'].max():%b %Y}"
 CAT_COLOR = {c: (P["series"][i] if i < 7 else OTHER) for i, c in enumerate(CATS)} | {"Other categories": OTHER}
 STAGE_COLOR = dict(zip(A.STAGES, P["series"]))
 
-# ------------------------------------------------------------------ sidebar
-with st.sidebar:
-    st.markdown("### HomeMonde · Demand")
-    PAGES = ["Overview", "AI suggestions", "AI analyst", "Demand calendar", "Most & least ordered", "Products", "Geography", "Trends", "Season & climate", "Lifecycle",
-             "Forecast & suggestions", "Future years (ML)", "Fabric consumption", "Outsourced stock", "Data"]
-    _want = st.query_params.get("page", "")                      # ?page=Geography opens that view directly (shareable links)
-    page = st.radio("View", PAGES, index=PAGES.index(_want) if _want in PAGES else 0, label_visibility="collapsed")
-    st.divider()
-    lo, hi = D_ALL["date"].min().date(), D_ALL["date"].max().date()
-    period = st.date_input("Period", (lo, hi), min_value=lo, max_value=hi)
-    f_cats = st.multiselect("Category", CATS, placeholder="All categories")
-    f_regions = st.multiselect("Region", sorted(D_ALL["region"].unique()), placeholder="All regions")
-    f_states = st.multiselect("State", sorted(D_ALL["state"].unique()), placeholder="All states")
-    _pool = D_ALL[D_ALL["state"].isin(f_states)] if f_states else D_ALL
-    f_districts = st.multiselect("District", sorted(_pool["district"].unique()), placeholder="All districts")
-    _src = [x for x in (SRC.IN_HOUSE, SRC.OUTSOURCED, SRC.BOTH, SRC.UNCLASSIFIED) if x in set(D_ALL["sourcing"].unique())]
-    f_sourcing = st.multiselect("Sourcing", _src, placeholder="In-house and outsourced",
-                                help="In-house = on the fabric sheet; Outsourced = on the outsource sheet; the rest by SKU range.") if len(_src) > 1 else []
-    st.caption(f"Data: {lo:%d %b %Y} – {hi:%d %b %Y} · Amazon.in, cancellations and MCF transfers excluded")
-
-start, end = (period if isinstance(period, tuple) and len(period) == 2 else (lo, hi))
-mask = D_ALL["date"].between(pd.Timestamp(start), pd.Timestamp(end))
-if f_cats:
-    mask &= D_ALL["category"].isin(f_cats)
-if f_regions:
-    mask &= D_ALL["region"].isin(f_regions)
-if f_states:
-    mask &= D_ALL["state"].isin(f_states)
-if f_districts:
-    mask &= D_ALL["district"].isin(f_districts)
-if f_sourcing:
-    mask &= D_ALL["sourcing"].isin(f_sourcing)
-D = D_ALL if bool(mask.all()) else D_ALL[mask]          # no filter, no copy: the unfiltered view is the common case
-FILT = (str(start), str(end), tuple(f_cats), tuple(f_regions), tuple(f_states), tuple(f_districts), tuple(f_sourcing))
-TITLES = PRODUCTS.set_index("asin")["title"]
-SKU_TITLE = D_ALL.drop_duplicates("sku").set_index("sku")["asin"].map(TITLES)
-ITEM_LEVELS = {"SKU (aliases merged)": "main_sku", "SKU (raw, as in report)": "sku", "Design family": "family", "Category": "category"}
-
-
-def with_title(df: pd.DataFrame, item: str, col: str | None = None) -> pd.DataFrame:
-    """Add a readable product title next to a sku / main_sku column."""
-    col = col or item
-    if item not in ("main_sku", "sku") or col not in df.columns:
-        return df
-    out = df.copy()
-    out.insert(out.columns.get_loc(col) + 1, "title" if col == item else f"{col}_title", out[col].map(SKU_TITLE).str[:70])
-    return out
-
-
-if D.empty:
-    st.warning("No sales match these filters.")
-    st.stop()
-
 
 @st.cache_data(show_spinner=False)
 def _ai_label() -> str:
@@ -435,6 +418,372 @@ def ai_brief(tables: dict, focus: str, key: str):
     if out := st.session_state.get(f"brief_out_{key}"):
         with st.container(border=True):
             st.markdown(out)
+
+
+def app_url() -> str:
+    """The address this dashboard is being viewed at, without query parameters (for the share card and QR code)."""
+    try:
+        return str(st.context.url).split("?")[0].rstrip("/") + "/"
+    except Exception:
+        return "http://localhost:8501/"
+
+
+def share_card(compact: bool = False):
+    """QR code and home-screen steps so the dashboard can be handed to someone on a phone."""
+    import segno
+    url = app_url()
+    qr = segno.make(url + "?view=phone", error="m").svg_inline(scale=4, dark="#111", light="#fff", border=0)
+    steps = ("**Android:** open the link in Chrome → ⋮ menu → *Add to Home screen*.  \n"
+             "**iPhone:** open it in Safari → Share → *Add to Home Screen*.  \n"
+             "It then opens full-screen from its own icon, like an app, and always shows the latest pushed data.")
+    if compact:
+        st.markdown(f"<div class='ph-qr'>{qr}</div>", unsafe_allow_html=True)
+        st.markdown(f"Scan to open on another phone, or share this link:  \n`{url}?view=phone`")
+        st.markdown(steps)
+    else:
+        c1, c2 = st.columns([1, 3])
+        c1.markdown(f"<div class='ph-qr'>{qr}</div>", unsafe_allow_html=True)
+        c2.markdown(f"**Phone link:** `{url}?view=phone` · the same address without `?view=phone` opens this desktop view.  \n" + steps +
+                    "  \nAnyone opening it needs the app password (and, on a private Community Cloud app, an invited e-mail).")
+
+
+if PHONE:
+    lo, hi = D_ALL["date"].min().date(), D_ALL["date"].max().date()
+    st.markdown("### HomeMonde · Demand")
+    st.caption(f"Amazon.in sales {lo:%d %b %Y} – {hi:%d %b %Y}")
+    c = st.columns([3, 2])
+    period = c[0].segmented_control("Period", ["4 wk", "8 wk", "13 wk", "Year"], default="8 wk", key="ph_period", label_visibility="collapsed")
+    cat_pick = c[1].selectbox("Category", ["All categories"] + CATS, key="ph_cat", label_visibility="collapsed")
+    weeks = {"4 wk": 4, "8 wk": 8, "13 wk": 13}.get(period or "8 wk")
+    one_cat = cat_pick != "All categories"
+    # D = the full history (category-filtered), which the cached forecast helpers read; DP = the chosen period for the figures shown
+    D = D_ALL[D_ALL["category"] == cat_pick] if one_cat else D_ALL
+    DP = D if weeks is None else D[D["date"] > pd.Timestamp(hi) - pd.Timedelta(weeks=weeks)]
+    FILT = (str(lo), str(hi), ((cat_pick,) if one_cat else ()), (), (), (), ())   # same cache key as the desktop view with that category filter
+    TITLES = PRODUCTS.set_index("asin")["title"]
+    if DP.empty:
+        st.warning("No sales in this period for that category.")
+        st.stop()
+
+    s = A.summary(DP.assign(all="all"), "all").iloc[0]
+    g4 = A.summary(D.assign(all="all"), "all").iloc[0].get("growth_4w_pct", float("nan"))
+    days = max(DP["date"].nunique(), 1)
+    tiles = [("Units", f"{s.units:,.0f}", f"{s.units / days:,.0f} a day"), ("Revenue", inr(s.revenue), f"₹{s.asp:,.0f} avg price"),
+             ("Orders", f"{s.orders:,.0f}", f"{int(s.asins):,} products"),
+             ("Last 4 wk vs prior 4", ("n/a" if pd.isna(g4) else f"{g4:+.1f}%"), "units, latest 8 weeks")]
+    st.markdown("<div class='ph-grid'>" + "".join(f"<div class='ph-tile'><div class='ph-label'>{l}</div><div class='ph-value'>{v}</div>"
+                                                 f"<div class='ph-note'>{n}</div></div>" for l, v, n in tiles) + "</div>", unsafe_allow_html=True)
+
+    daily = A.daily_series(DP)
+    fig = go.Figure()
+    fig.add_scatter(x=daily.index, y=daily["units"], name="Daily", mode="lines", line=dict(color=P["muted"], width=1), opacity=0.5, hovertemplate="%{y:,.0f}")
+    fig.add_scatter(x=daily.index, y=daily["units"].rolling(7, center=True).mean(), name="7-day average", mode="lines",
+                    line=dict(color=P["series"][0], width=2.5), hovertemplate="%{y:,.0f}")
+    fig = style(fig, 250, legend=False, ytitle=None)
+    fig.update_layout(margin=dict(l=4, r=8, t=8, b=48))         # the chart card's padding eats the bottom of the plot; keep the labels well inside
+    fig.update_xaxes(tickformat="%d %b")                       # one-line date labels: the year would wrap under them and be cut off
+    show(fig)
+    st.caption("Units per day (grey) and the 7-day average (blue)")
+
+    key_points(INS.overview(DP))
+
+    cat = A.summary(DP, "category")
+    with st.expander(f"Top sellers · {len(cat)} categor{'y' if len(cat) == 1 else 'ies'}", expanded=True):
+        top = A.summary(DP, "main_sku").head(10)
+        top["growth_4w_pct"] = A.summary(D, "main_sku").get("growth_4w_pct", pd.Series(dtype=float)).reindex(top.index)
+        first_asin = DP.drop_duplicates("main_sku").set_index("main_sku")["asin"]
+        top = top.assign(product=top.index.map(lambda k: str(TITLES.get(first_asin.get(k), ""))[:40]))
+        table(top.reset_index()[["main_sku", "units", "growth_4w_pct", "product"]], hide_index=True, height=38 * (len(top) + 1) + 4, row_height=38,
+              column_config={"main_sku": st.column_config.TextColumn("SKU", pinned=True, width="medium"),
+                             "units": st.column_config.NumberColumn("Units", format="localized"),
+                             "growth_4w_pct": st.column_config.NumberColumn("4 wk %", format="%+.0f"),
+                             "product": st.column_config.TextColumn("Product", width="large")})
+        if len(cat) > 1:
+            show(hbar(cat["units"], color=[CAT_COLOR.get(c_, OTHER) for c_ in cat.index[::-1]], height=max(160, 26 * len(cat) + 40)))
+
+    tt = A.trend_table(D, "main_sku")
+    if tt.empty:
+        rising, falling = tt, tt
+    else:
+        rising, falling = tt[tt["direction"] == "Rising"].head(6), tt[tt["direction"] == "Falling"].tail(6)
+    with st.expander(f"Rising and falling · {len(rising)} up, {len(falling)} down, last 8 weeks"):
+        for label, part in (("Rising", rising), ("Falling", falling)):
+            st.markdown(f"**{label}**")
+            if part.empty:
+                st.caption("None with a clear trend.")
+            else:
+                table(part.reset_index()[["main_sku", "units_recent", "growth_pct_per_week"]], hide_index=True, height=38 * (len(part) + 1) + 4,
+                      row_height=38, column_config={"main_sku": st.column_config.TextColumn("SKU", pinned=True),
+                                                    "units_recent": st.column_config.NumberColumn("Units 8 wk", format="localized"),
+                                                    "growth_pct_per_week": st.column_config.NumberColumn("% / week", format="%+.1f")})
+
+    reg = A.summary(DP[DP["region"] != "Unknown"], "region")
+    with st.expander("Where it sells"):
+        show(hbar(reg["units"], height=max(160, 26 * len(reg) + 40)))
+        st.caption("Units by region in the period")
+        states = A.summary(DP[DP["state"] != "UNKNOWN"], "state").head(8)
+        show(hbar(states["units"], height=max(160, 26 * len(states) + 40)))
+        st.caption("Top 8 states")
+
+    if cfg.OUTSOURCE_PARQUET.exists():
+        sc = stock_cover(_mtime())
+        if one_cat:
+            sc = sc[sc["category"] == cat_pick]
+        alert = sc[sc["status"].isin(["Out of stock", "Critical", "Reorder now"])]
+        alert = alert.assign(_o=alert["status"].map({"Out of stock": 0, "Critical": 1, "Reorder now": 2})).sort_values(["_o", "weekly_rate"], ascending=[True, False])
+        with st.expander(f"Stock alerts, outsourced · {len(alert)} SKUs"):
+            if alert.empty:
+                st.caption("No outsourced SKU is out of stock or due for reorder.")
+            else:
+                table(alert[["sku", "status", "available", "cover_weeks", "reorder_festive"]], hide_index=True, height=min(520, 38 * (len(alert) + 1) + 4), row_height=38,
+                      column_config={"sku": st.column_config.TextColumn("SKU", pinned=True), "available": st.column_config.NumberColumn("Stock", format="localized"),
+                                     "cover_weeks": st.column_config.NumberColumn("Cover wk", format="%.1f"),
+                                     "reorder_festive": st.column_config.NumberColumn("Reorder", format="localized")})
+                st.caption("Reorder = units to order now to cover the lead time plus review period (festive scenario).")
+
+    if cfg.FABRIC_PARQUET.exists():
+        try:
+            req = fabric_requirement(_mtime(), _fab_mtime(), FILT, 12)
+        except ValueError:                                   # too little history in this slice to forecast
+            req = pd.DataFrame()
+        with st.expander("Fabric needed, next 12 weeks"):
+            if req.empty:
+                st.caption("No fabric figures available for this selection.")
+            else:
+                r = req[req.index != FB.UNKNOWN].head(10).reset_index()
+                table(r[["key", "fabric_type", "festive_m", "baseline_m"]], hide_index=True, height=38 * (len(r) + 1) + 4, row_height=38,
+                      column_config={"key": st.column_config.TextColumn("Fabric code", pinned=True), "fabric_type": st.column_config.TextColumn("Type"),
+                                     "festive_m": st.column_config.NumberColumn("Festive m", format="localized"),
+                                     "baseline_m": st.column_config.NumberColumn("Baseline m", format="localized")})
+                if FB.UNKNOWN in req.index:
+                    st.caption(f"Plus {req.loc[FB.UNKNOWN, 'festive_m']:,.0f} m for products whose fabric code is not on the sheet.")
+
+    try:
+        fc = forecasts(_mtime(), FILT, "category", 12)
+    except ValueError:
+        fc = pd.DataFrame()
+    with st.expander("Forecast, next 12 weeks"):
+        if fc.empty:
+            st.caption("Not enough history to forecast this selection.")
+        else:
+            f = fc.groupby("group")[["baseline", "festive_scenario"]].sum().sort_values("festive_scenario", ascending=False).round(0).reset_index()
+            table(f, hide_index=True, height=38 * (len(f) + 1) + 4, row_height=38,
+                  column_config={"group": st.column_config.TextColumn("Category", pinned=True), "baseline": st.column_config.NumberColumn("Baseline", format="localized"),
+                                 "festive_scenario": st.column_config.NumberColumn("Festive", format="localized")})
+            st.caption("Units over the next 12 weeks: baseline, and with the festive uplift seen last year.")
+
+    import shutil as _sh
+    with st.expander("Ask the analyst"):
+        if not (cfg.ANTHROPIC_API_KEY or _sh.which("claude")):
+            st.caption("Claude features are switched off on this copy (no API key).")
+        else:
+            from demand import ai
+            q = st.text_input("Question", placeholder="e.g. Which curtains grew most in Maharashtra?", key="ph_q")
+            if st.button("Ask", key="ph_ask", width="stretch") and q.strip():
+                if "analyst" not in st.session_state or st.session_state.get("analyst_mtime") != _mtime():
+                    with st.spinner("Preparing the analyst …"):
+                        st.session_state.analyst, st.session_state.analyst_mtime, st.session_state.chat = ai.Analyst(), _mtime(), []
+                try:
+                    with st.spinner("Thinking …"):
+                        st.session_state.ph_answer = ai.split_followups(st.session_state.analyst.ask(q.strip()))[0]
+                except Exception as e:
+                    st.session_state.ph_answer = "⚠️ " + ai.friendly_error(e)
+            if ans := st.session_state.get("ph_answer"):
+                st.markdown(ans)
+
+    with st.expander("Share this app"):
+        share_card(compact=True)
+    st.markdown("<a class='ph-link' href='?view=desktop' target='_self'>Open the full desktop view</a>", unsafe_allow_html=True)
+    st.caption("Filters, every page and the AI suggestions are in the desktop view; it also works on a phone, just wider.")
+    st.stop()
+
+
+# ------------------------------------------------------------------ sidebar
+with st.sidebar:
+    st.markdown("### HomeMonde · Demand")
+    PAGES = ["Overview", "AI suggestions", "AI analyst", "Demand calendar", "Most & least ordered", "Products", "Geography", "Trends", "Season & climate", "Lifecycle",
+             "Forecast & suggestions", "Future years (ML)", "Fabric consumption", "Outsourced stock", "Monthly reports", "Data"]
+    _want = st.query_params.get("page", "")                      # ?page=Geography opens that view directly (shareable links)
+    page = st.radio("View", PAGES, index=PAGES.index(_want) if _want in PAGES else 0, label_visibility="collapsed")
+    st.divider()
+    lo, hi = D_ALL["date"].min().date(), D_ALL["date"].max().date()
+    period = st.date_input("Period", (lo, hi), min_value=lo, max_value=hi)
+    f_cats = st.multiselect("Category", CATS, placeholder="All categories")
+    f_regions = st.multiselect("Region", sorted(D_ALL["region"].unique()), placeholder="All regions")
+    f_states = st.multiselect("State", sorted(D_ALL["state"].unique()), placeholder="All states")
+    _pool = D_ALL[D_ALL["state"].isin(f_states)] if f_states else D_ALL
+    f_districts = st.multiselect("District", sorted(_pool["district"].unique()), placeholder="All districts")
+    _src = [x for x in (SRC.IN_HOUSE, SRC.OUTSOURCED, SRC.BOTH, SRC.UNCLASSIFIED) if x in set(D_ALL["sourcing"].unique())]
+    f_sourcing = st.multiselect("Sourcing", _src, placeholder="In-house and outsourced",
+                                help="In-house = on the fabric sheet; Outsourced = on the outsource sheet; the rest by SKU range.") if len(_src) > 1 else []
+    st.caption(f"Data: {lo:%d %b %Y} – {hi:%d %b %Y} · Amazon.in, cancellations and MCF transfers excluded")
+    st.markdown("<a href='?view=phone' target='_self'>📱 Phone view</a>", unsafe_allow_html=True)
+
+start, end = (period if isinstance(period, tuple) and len(period) == 2 else (lo, hi))
+mask = D_ALL["date"].between(pd.Timestamp(start), pd.Timestamp(end))
+if f_cats:
+    mask &= D_ALL["category"].isin(f_cats)
+if f_regions:
+    mask &= D_ALL["region"].isin(f_regions)
+if f_states:
+    mask &= D_ALL["state"].isin(f_states)
+if f_districts:
+    mask &= D_ALL["district"].isin(f_districts)
+if f_sourcing:
+    mask &= D_ALL["sourcing"].isin(f_sourcing)
+D = D_ALL if bool(mask.all()) else D_ALL[mask]          # no filter, no copy: the unfiltered view is the common case
+FILT = (str(start), str(end), tuple(f_cats), tuple(f_regions), tuple(f_states), tuple(f_districts), tuple(f_sourcing))
+TITLES = PRODUCTS.set_index("asin")["title"]
+SKU_TITLE = D_ALL.drop_duplicates("sku").set_index("sku")["asin"].map(TITLES)
+ITEM_LEVELS = {"SKU (aliases merged)": "main_sku", "SKU (raw, as in report)": "sku", "Design family": "family", "Category": "category"}
+
+# ------------------------------------------------------------------ monthly reports
+# Month-wise views ignore the sidebar period (the month picker replaces it) but keep every other sidebar filter.
+_m2 = pd.Series(True, index=D_ALL.index)
+for _col, _vals in (("category", f_cats), ("region", f_regions), ("state", f_states), ("district", f_districts), ("sourcing", f_sourcing)):
+    if _vals:
+        _m2 &= D_ALL[_col].isin(_vals)
+D_M = D_ALL if bool(_m2.all()) else D_ALL[_m2]
+FILT_NF = (tuple(f_cats), tuple(f_regions), tuple(f_states), tuple(f_districts), tuple(f_sourcing))
+MONTHS = sorted(D_M["month"].unique())
+ALL_MONTHS = "All months"
+
+
+def month_name(m: str) -> str:
+    return ALL_MONTHS if m == ALL_MONTHS else pd.Period(m).strftime("%B %Y")
+
+
+def month_tag(m: str) -> str:
+    """File-name friendly: 2026-09, or all-months."""
+    return "all-months" if m == ALL_MONTHS else m
+
+
+NO_CODE = "(no code: size rule)"               # short label for products the fabric sheet does not list, in the monthly tables
+ORDER_LINE_COLS = ["date", "order_id", "sku", "main_sku", "asin", "product_name", "category", "family", "quantity", "unit_price", "revenue",
+                   "state", "district", "city", "pin", "region", "fulfillment", "order_status", "sourcing"]
+
+
+@st.cache_data(show_spinner="Preparing the month's tables …")
+def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str) -> dict:
+    """Every dataset the tool can hand out for one month (or all months): name -> DataFrame. Grouped tables carry a `month`
+    column when all months are asked for, so one file holds the month-by-month figures."""
+    d = D_M if month == ALL_MONTHS else D_M[D_M["month"] == month]
+    by_m = ["month"] if month == ALL_MONTHS else []
+    title = PRODUCTS.set_index("asin")["title"]
+    out = {}
+    out["Order lines"] = d[[c for c in ORDER_LINE_COLS if c in d.columns]].sort_values("date")
+    sku = d.groupby(by_m + ["main_sku"]).agg(units=("quantity", "sum"), revenue=("revenue", "sum"), orders=("order_id", "nunique"),
+                                             category=("category", "first"), asin=("asin", "first")).reset_index()
+    sku["title"] = sku["asin"].map(title).str[:80]
+    out["Sales by SKU"] = sku.sort_values(by_m + ["units"], ascending=[True] * len(by_m) + [False])
+    out["Sales by SKU and state"] = (d.groupby(by_m + ["main_sku", "state"]).agg(units=("quantity", "sum"), revenue=("revenue", "sum")).reset_index()
+                                      .sort_values(by_m + ["units"], ascending=[True] * len(by_m) + [False]))
+    for name, col in (("Sales by category", "category"), ("Sales by state", "state"), ("Sales by district", "district"), ("Sales by region", "region")):
+        g = d.groupby(by_m + [col]).agg(units=("quantity", "sum"), revenue=("revenue", "sum"), orders=("order_id", "nunique"),
+                                        products=("asin", "nunique")).reset_index()
+        g["unit_share_pct"] = (g["units"] / g.groupby(by_m)["units"].transform("sum") * 100).round(2) if by_m else (g["units"] / g["units"].sum() * 100).round(2)
+        out[name] = g.sort_values(by_m + ["units"], ascending=[True] * len(by_m) + [False])
+    out["Daily units"] = d.groupby("date").agg(units=("quantity", "sum"), revenue=("revenue", "sum"), orders=("order_id", "nunique")).reset_index()
+    if cfg.FABRIC_PARQUET.exists():
+        dm = FB.with_metres(d, fabric_map(mtime, fab_mtime))
+        known = dm.dropna(subset=["metres"])
+        fc = known.groupby(by_m + ["fabric_key"]).agg(metres=("metres", "sum"), units=("quantity", "sum"), products=("asin", "nunique"),
+                                                      fabric_type=("fabric_type", "first"), fabric_family=("fabric_family", "first"),
+                                                      colours=("colour", "nunique")).reset_index().rename(columns={"fabric_key": "fabric_code"})
+        fc["metres"] = fc["metres"].round(1)
+        fc["fabric_code"] = fc["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
+        out["Fabric by fabric code"] = fc.sort_values(by_m + ["metres"], ascending=[True] * len(by_m) + [False])
+        fs = known.groupby(by_m + ["main_sku"]).agg(fabric_code=("fabric_key", "first"), fabric_type=("fabric_type", "first"), fabric_family=("fabric_family", "first"),
+                                                    colour=("colour", "first"), metres_per_unit=("metres_per_unit", "first"), units=("quantity", "sum"),
+                                                    metres=("metres", "sum"), category=("category", "first"), fabric_source=("fabric_source", "first"),
+                                                    asin=("asin", "first")).reset_index()
+        fs["metres"] = fs["metres"].round(1)
+        fs["fabric_code"] = fs["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
+        fs["title"] = fs["asin"].map(title).str[:80]
+        out["Fabric by SKU"] = fs.sort_values(by_m + ["metres"], ascending=[True] * len(by_m) + [False])
+        piv = FB.with_metres(D_M, fabric_map(mtime, fab_mtime)).dropna(subset=["metres"]).pivot_table(index="fabric_key", columns="month", values="metres",
+                                                                                                       aggfunc="sum", fill_value=0).round(0)
+        piv.insert(0, "total_metres", piv.sum(axis=1))
+        piv = piv.sort_values("total_metres", ascending=False).reset_index().rename(columns={"fabric_key": "fabric_code"})
+        piv["fabric_code"] = piv["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
+        out["Fabric by fabric code and month"] = piv
+    prod = PRODUCTS[PRODUCTS["asin"].isin(d["asin"].unique())][["asin", "main_sku", "title", "category", "family", "first_sale", "last_sale"]].copy()
+    prod["units_in_period"] = prod["asin"].map(d.groupby("asin")["quantity"].sum()).fillna(0).astype(int)
+    out["Products sold"] = prod.sort_values("units_in_period", ascending=False)
+    if cfg.OUTSOURCE_PARQUET.exists():
+        out["Outsourced stock (latest snapshot)"] = stock_cover(mtime)
+    return out
+
+
+@st.cache_data(show_spinner="Building the Excel workbook …")
+def monthly_workbook(mtime: float, fab_mtime: float, filt_nf: tuple, month: str) -> bytes:
+    """One workbook with every dataset for the month. For all months the order lines are left out (hundreds of thousands of rows)."""
+    import io
+    ds = monthly_datasets(mtime, fab_mtime, filt_nf, month)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        for name, df in ds.items():
+            if month == ALL_MONTHS and name == "Order lines":
+                continue
+            frame = df.copy()
+            for c in frame.columns:
+                if pd.api.types.is_datetime64_any_dtype(frame[c]):          # Excel cells cannot carry a time zone
+                    frame[c] = pd.to_datetime(frame[c]).dt.tz_localize(None)
+            frame.to_excel(xw, sheet_name=name[:31], index=False)
+            ws = xw.sheets[name[:31]]
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+    return buf.getvalue()
+
+
+def fabric_month_block(month: str, key: str):
+    """Fabric consumption of one month (or all months): by fabric code, by SKU, and the code x month grid, each downloadable."""
+    ds = monthly_datasets(_mtime(), _fab_mtime(), FILT_NF, month)
+    if "Fabric by fabric code" not in ds:
+        st.info("No fabric sheet loaded.")
+        return
+    fc, fs, piv = ds["Fabric by fabric code"], ds["Fabric by SKU"], ds["Fabric by fabric code and month"]
+    tag = month_tag(month)
+    k = st.columns(4)
+    k[0].metric("Metres consumed", f"{fc['metres'].sum():,.0f} m")
+    k[1].metric("Units with a fabric figure", f"{fc['units'].sum():,.0f}")
+    k[2].metric("Fabric codes used", f"{fc.loc[fc['fabric_code'] != NO_CODE, 'fabric_code'].nunique():,}")
+    k[3].metric("SKUs", f"{fs['main_sku'].nunique():,}")
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        with card(f"By fabric code · {month_name(month)}", "metres = units sold × metres per unit from the sheet"):
+            table(fc, hide_index=True, height=420, column_config={"metres": st.column_config.NumberColumn("Metres", format="localized"),
+                                                                 "units": st.column_config.NumberColumn("Units", format="localized")})
+            st.download_button("Download by fabric code (CSV)", fc.to_csv(index=False).encode(), f"fabric_by_code_{tag}.csv", "text/csv", key=f"{key}_dl_code")
+    with c2:
+        with card(f"By SKU · {month_name(month)}", "every SKU with a fabric figure, largest consumption first"):
+            table(fs, hide_index=True, height=420, column_config={"main_sku": st.column_config.TextColumn("SKU", pinned=True),
+                                                                 "metres": st.column_config.NumberColumn("Metres", format="localized"),
+                                                                 "units": st.column_config.NumberColumn("Units", format="localized"),
+                                                                 "metres_per_unit": st.column_config.NumberColumn("m / unit", format="%.2f"),
+                                                                 "title": st.column_config.TextColumn("Product", width="large")})
+            st.download_button("Download by SKU (CSV)", fs.to_csv(index=False).encode(), f"fabric_by_sku_{tag}.csv", "text/csv", key=f"{key}_dl_sku")
+    with card("Every fabric code, month by month", "metres per month across the whole history; sidebar place and category filters apply"):
+        mcfg = {"fabric_code": st.column_config.TextColumn("Fabric code", pinned=True), "total_metres": st.column_config.NumberColumn("Total", format="localized")}
+        for c in piv.columns[2:]:
+            mcfg[c] = st.column_config.NumberColumn(pd.Period(c).strftime("%b %y"), format="localized")
+        table(piv, hide_index=True, height=min(560, 36 * (len(piv) + 1) + 4), column_config=mcfg)
+        st.download_button("Download the month-by-month grid (CSV)", piv.to_csv(index=False).encode(), "fabric_by_code_and_month.csv", "text/csv", key=f"{key}_dl_grid")
+
+
+def with_title(df: pd.DataFrame, item: str, col: str | None = None) -> pd.DataFrame:
+    """Add a readable product title next to a sku / main_sku column."""
+    col = col or item
+    if item not in ("main_sku", "sku") or col not in df.columns:
+        return df
+    out = df.copy()
+    out.insert(out.columns.get_loc(col) + 1, "title" if col == item else f"{col}_title", out[col].map(SKU_TITLE).str[:70])
+    return out
+
+
+if D.empty:
+    st.warning("No sales match these filters.")
+    st.stop()
 
 
 # ================================================================== pages
@@ -1218,7 +1567,7 @@ elif page == "Fabric consumption":
     key_points(INS.fabric(dm, fabric_requirement(_mtime(), _fab_mtime(), FILT, 12), cov))
 
     FAB_TABS = ["By fabric code", "By type & family", "Over time", "Requirement (next 12 weeks)", "Long range (ML)", "By place", "Coverage & sheet",
-                "SKUs without fabric data"]
+                "SKUs without fabric data", "By month"]
     _tab = st.query_params.get("tab", "")                        # ?page=Fabric consumption&tab=SKUs without fabric data opens that tab
     tabs = st.tabs(FAB_TABS, default=_tab if _tab in FAB_TABS else None)
     with tabs[0]:
@@ -1418,6 +1767,11 @@ elif page == "Fabric consumption":
         st.caption("**Estimated** = the tool works out metres from the sheet's size rule (curtain length, cover size) but has no fabric code. "
                    "**No data** = no fabric figure at all. Outsourced products are left out: they are bought in finished and need no fabric data. "
                    "Add these SKUs to the fabric sheet and run `python -m demand.ingest`; they then drop off this list.")
+    with tabs[8]:
+        _fm = st.selectbox("Month", [ALL_MONTHS] + MONTHS[::-1], index=1 if MONTHS else 0, format_func=month_name, key="fab_month")
+        st.caption("Pick a month to see exactly what was consumed in it; *All months* lists every month side by side. "
+                   "The **Monthly reports** page has the same month picker for every other dataset and one Excel workbook per month.")
+        fabric_month_block(_fm, key="fab")
     ai_brief({"12-week fabric requirement": fabric_requirement(_mtime(), _fab_mtime(), FILT, 12).head(25), "top fabric codes": FB.by_fabric(dm).head(20),
               "metres by fabric type": FB.by_fabric(dm, "fabric_type"), "coverage": cov},
              "Explain the fabric consumption picture: which fabrics matter most, what is rising or falling, what to buy for the next 12 weeks, "
@@ -1650,6 +2004,41 @@ elif page == "Outsourced stock":
              "the conclusion rests on the forecast and on the reading of 'virtual quantity'.", "outsource")
 
 
+elif page == "Monthly reports":
+    st.title("Monthly reports")
+    c = st.columns([2, 5])
+    month = c[0].selectbox("Month", [ALL_MONTHS] + MONTHS[::-1], index=1 if MONTHS else 0, format_func=month_name, key="rep_month")
+    c[1].caption("One month of everything the tool knows, in the shape the team works with: sales, fabric consumption, products and stock. "
+                 "Sidebar place, category and sourcing filters apply; the sidebar period does not, the month picker replaces it.")
+    ds = monthly_datasets(_mtime(), _fab_mtime(), FILT_NF, month)
+    d_m = ds["Order lines"]
+    k = st.columns(5)
+    k[0].metric("Units", f"{d_m['quantity'].sum():,.0f}")
+    k[1].metric("Revenue", inr(d_m["revenue"].sum()))
+    k[2].metric("Orders", f"{d_m['order_id'].nunique():,}")
+    k[3].metric("Products sold", f"{d_m['asin'].nunique():,}")
+    k[4].metric("Fabric consumed", f"{ds['Fabric by fabric code']['metres'].sum():,.0f} m" if "Fabric by fabric code" in ds else "n/a")
+
+    st.subheader("Download centre")
+    c1, c2 = st.columns([3, 2])
+    pick = c1.selectbox("Dataset", list(ds), key="rep_dataset")
+    frame = ds[pick]
+    c2.markdown(f"<div class='card-note' style='padding-top:1.9rem'>{len(frame):,} rows · {len(frame.columns)} columns</div>", unsafe_allow_html=True)
+    table(frame.head(500), hide_index=True, height=380)
+    if len(frame) > 500:
+        st.caption(f"Showing the first 500 of {len(frame):,} rows; the download has all of them.")
+    b = st.columns([2, 3, 4])
+    b[0].download_button(f"Download {pick} (CSV)", frame.to_csv(index=False).encode(), f"{pick.lower().replace(' ', '_')}_{month_tag(month)}.csv", "text/csv",
+                         width="stretch", key="rep_dl_csv")
+    b[1].download_button(f"Download everything for {month_name(month)} (Excel)", monthly_workbook(_mtime(), _fab_mtime(), FILT_NF, month),
+                         f"homemonde_{month_tag(month)}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch", key="rep_dl_xlsx",
+                         help="One sheet per dataset" + (". Order lines are left out of the all-months workbook; download them per month." if month == ALL_MONTHS else ""))
+    st.caption("Datasets: order lines (one row per order line), sales by SKU / SKU and state / category / state / district / region, daily units, "
+               "fabric consumption by fabric code and by SKU, the fabric code × month grid, products sold, and the latest outsourced stock snapshot.")
+
+    st.subheader("Fabric consumption")
+    fabric_month_block(month, key="rep")
+
 elif page == "Data":
     st.title("Data")
     d_all = ORDERS
@@ -1680,6 +2069,9 @@ elif page == "Data":
     table(rec.style.format("{:,.0f}"))
     st.caption("'Units in sheet' is what a SUM of the quantity column gives in Excel for that month's sheet. The tool's demand figure is lower only by "
                "the non-Amazon (MCF) rows; cancelled rows already carry quantity 0. Verified row-for-row against the workbook: 0 difference in every month.")
+
+    st.subheader("Share on phones")
+    share_card()
 
     st.subheader("Add a new report")
     st.markdown("Download **Reports → Fulfilment / Orders → All Orders** from Seller Central for the new month and upload it here "

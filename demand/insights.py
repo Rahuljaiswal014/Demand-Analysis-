@@ -41,8 +41,13 @@ def _movers(t: pd.DataFrame, min_units: int = MIN_UNITS):
 def overview(d: pd.DataFrame) -> str:
     cat, reg = A.summary(d, "category"), A.summary(d[d["region"] != "Unknown"], "region")
     total = A.summary(d.assign(_a="all"), "_a").iloc[0]
-    pts = [f"**{cat.index[0]}** is {cat['unit_share_pct'].iloc[0]:.0f}% of units; the next two are {cat.index[1]} "
-           f"({cat['unit_share_pct'].iloc[1]:.0f}%) and {cat.index[2]} ({cat['unit_share_pct'].iloc[2]:.0f}%)."]
+    if len(cat) >= 3:
+        pts = [f"**{cat.index[0]}** is {cat['unit_share_pct'].iloc[0]:.0f}% of units; the next two are {cat.index[1]} "
+               f"({cat['unit_share_pct'].iloc[1]:.0f}%) and {cat.index[2]} ({cat['unit_share_pct'].iloc[2]:.0f}%)."]
+    elif len(cat) == 2:
+        pts = [f"**{cat.index[0]}** is {cat['unit_share_pct'].iloc[0]:.0f}% of units, **{cat.index[1]}** the rest."]
+    else:
+        pts = [f"**{cat.index[0]}**: {total['units']:,.0f} units, {cat['asins'].iloc[0]:,} products."]
     if "growth_4w_pct" in total and pd.notna(total["growth_4w_pct"]):
         pts.append(f"The last 4 weeks ran **{_pct(total['growth_4w_pct'])}** against the 4 weeks before "
                    f"({total['last_4w']:,.0f} vs {total['prev_4w']:,.0f} units).")

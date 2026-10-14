@@ -11,3 +11,4 @@ streamlit==1.64.0
 plotly==7.1.0
 anthropic==1.7.0
 scikit-learn==1.9.1        # the forecast model behind "Future years (ML)"
+segno==1.6.6               # QR code for the share card (pure Python)

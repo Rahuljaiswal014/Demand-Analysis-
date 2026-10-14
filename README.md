@@ -11,6 +11,26 @@ python -m demand.ingest          # reads new report files, rebuilds the store, f
 streamlit run app.py             # dashboard at http://localhost:8501
 ```
 
+## Monthly reports and downloads
+
+Page **Monthly reports** (and the **By month** tab of *Fabric consumption*) works month by month instead of by the sidebar
+period: pick a month, or *All months*, and the page shows that month's units, revenue, orders, products and metres of fabric,
+the fabric consumption by fabric code and by SKU, and the fabric code × month grid. The download centre previews any
+dataset for the month and hands it out as CSV: order lines, sales by SKU / SKU and state / category / state / district / region,
+daily units, fabric by code and by SKU, the code × month grid, products sold, and the latest outsourced stock snapshot. One
+button downloads an Excel workbook with every dataset on its own sheet (`homemonde_2026-09.xlsx`); the all-months workbook
+leaves out the order lines, which are several hundred thousand rows. Sidebar place, category and sourcing filters apply.
+
+## Use it on a phone
+
+The same app has a compact phone layout. A phone-width browser switches to it by itself on the first visit
+(`demand/screen_probe`, a tiny component that reports the screen width); the address `…/?view=phone` opens it directly and
+`…/?view=desktop` forces the full dashboard on any screen. The phone view is one scrolling page: period and category pickers,
+the four headline figures, the daily trend, the key points, then fold-out sections for top sellers, rising and falling SKUs,
+regions and states, outsourced stock alerts, the 12-week fabric requirement, the 12-week forecast, a one-question analyst box
+and a share card. The share card (also on the desktop **Data** page) shows a QR code of the phone link and the
+*Add to Home Screen* steps for Android and iPhone, which give the dashboard its own icon that opens full-screen like an app.
+
 ## Deploy it on Streamlit Community Cloud
 
 The repository deploys as it stands, with the same dataset the local dashboard reads: the cleaned store in
