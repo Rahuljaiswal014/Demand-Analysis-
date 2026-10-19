@@ -1,0 +1,33 @@
+# Render Blueprint: deploys this repository as one web service. In the Render dashboard choose New -> Blueprint, pick
+# this repository, and Render reads this file. Nothing in the app, its layout or its data changes for Render: the same
+# app.py, requirements.txt and committed data/ folder that run locally and on Streamlit Community Cloud run here.
+#
+# Settings that live outside this file:
+#   - secrets: APP_PASSWORD and ANTHROPIC_API_KEY are asked for when the Blueprint is first applied (sync: false below)
+#     and can be changed any time under the service's Environment tab. demand/config.py reads them from the environment.
+#   - Python version: .python-version in the repository root (3.12, the version the pinned requirements were tested on).
+services:
+  - type: web
+    name: homemonde-demand
+    runtime: python
+    region: singapore                    # nearest Render region to India; fixed once the service exists
+    # Memory decides the plan. Measured with every page loaded in turn: 1.7 GB resting, 2.3 GB at the highest moment
+    # (Fabric consumption page). 2c-4g (legacy "pro", 4 GB) runs it with headroom. 1c-2g (legacy "standard", 2 GB) sits
+    # below the measured peak and Render restarts a service that goes over its memory, so it would cut out on the
+    # heaviest pages. free and 0.5c-512mb (512 MB) cannot hold the order store at all.
+    plan: 2c-4g
+    branch: main
+    autoDeployTrigger: commit            # every push to main redeploys, as on Community Cloud
+    buildCommand: pip install -r requirements.txt
+    # Render hands the service its port in $PORT and expects it to listen on every interface.
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /_stcore/health     # Streamlit's own health endpoint; answers "ok" as soon as the server is up
+    envVars:
+      - key: APP_PASSWORD                # every visitor is asked for it once per browser session; the dashboard holds sales data
+        sync: false
+      - key: ANTHROPIC_API_KEY           # only if the Claude features should work on the hosted copy; leave blank otherwise
+        sync: false
+      - key: AI_BACKEND                  # the claude CLI is not on the server, so the API is the only route there
+        value: api
+      - key: PYTHONUNBUFFERED            # log lines reach the Render log view as they happen
+        value: "1"

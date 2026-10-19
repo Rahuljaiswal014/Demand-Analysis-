@@ -31,6 +31,59 @@ regions and states, outsourced stock alerts, the 12-week fabric requirement, the
 and a share card. The share card (also on the desktop **Data** page) shows a QR code of the phone link and the
 *Add to Home Screen* steps for Android and iPhone, which give the dashboard its own icon that opens full-screen like an app.
 
+## Deploy it on Render
+
+The repository deploys to [Render](https://render.com) as it stands: `render.yaml` in the root describes the service
+and `.python-version` pins Python 3.12 (the version the pinned `requirements.txt` was tested on). Nothing in the app,
+its layout or its data is different from the local copy; the same committed `data/` folder is what the hosted app reads.
+
+**Deploy once.** Render dashboard → **New** → **Blueprint** → connect the GitHub account and pick
+`Rahuljaiswal014/Demand-Analysis-` (keep it private). Render reads `render.yaml` and asks for the two secrets before it
+builds:
+
+| Variable | Value |
+| --- | --- |
+| `APP_PASSWORD` | every visitor is asked for it once per browser session; recommended, the dashboard holds sales data |
+| `ANTHROPIC_API_KEY` | only if the Claude features should work on the hosted copy (pay-as-you-go API credit); leave blank otherwise |
+
+Both can be changed later under the service's **Environment** tab (`demand/config.py` reads them from the environment,
+the same names as in `.env`). The first build installs the requirements and takes a few minutes; after that the app is at
+`https://homemonde-demand.onrender.com` (or whatever name Render settles on). Every push to `main` redeploys it.
+
+What `render.yaml` sets, in case the service is created by hand from **New → Web Service** instead:
+
+| Setting | Value |
+| --- | --- |
+| Runtime | Python; version from `.python-version` (3.12) |
+| Region | Singapore (closest to India) |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true` |
+| Health check path | `/_stcore/health` |
+| Plan | `2c-4g` (4 GB memory, legacy name "Pro"); see below |
+| Environment | `APP_PASSWORD`, `ANTHROPIC_API_KEY`, `AI_BACKEND=api`, `PYTHONUNBUFFERED=1` |
+
+**Which plan.** Memory is what decides it. Measured with every page loaded in turn: 1.7 GB resting, 2.3 GB at the
+highest moment (the Fabric consumption page). Render restarts a service that goes over its plan's memory, so the plan must
+hold the peak:
+
+| Plan | Memory | Fits? |
+| --- | --- | --- |
+| `free`, `0.5c-512mb` | 512 MB | no: the order store alone does not fit |
+| `1c-2g` ("Standard") | 2 GB | below the measured peak; expect restarts on the heaviest pages |
+| `2c-4g` ("Pro") | 4 GB | yes, with room for two or three people at once |
+
+Render's instance pricing is on [render.com/pricing](https://render.com/pricing). To try a smaller plan anyway, change
+`plan:` in `render.yaml` and push, or change it under the service's **Settings**; if the log shows the service being
+killed and restarted, that is the memory limit.
+
+**Refresh the data.** Same routine as below for Community Cloud: ingest locally, rebuild the analyst database, commit
+`data/store` and `data/raw`, push. Render's disk is wiped on every deploy and restart, so an upload on the hosted
+**Data** page lasts only until then; the push is what makes it permanent.
+
+**Reading the logs.** The service's **Logs** tab shows Streamlit's output live. "Out of memory" or an unexpected restart
+means the plan is too small for the page that was open; a build failure almost always means a requirement failed to
+install, and the line above the failure names it.
+
 ## Deploy it on Streamlit Community Cloud
 
 The repository deploys as it stands, with the same dataset the local dashboard reads: the cleaned store in

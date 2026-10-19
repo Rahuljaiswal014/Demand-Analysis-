@@ -32,7 +32,7 @@ try:              # pandas 3 keeps string columns in Arrow memory, which is hand
 except Exception:
     pass
 
-# Optional viewer gate for a hosted copy. Set APP_PASSWORD in Streamlit's secrets (Community Cloud) or in .env and every
+# Optional viewer gate for a hosted copy. Set APP_PASSWORD in Streamlit's secrets (Community Cloud), the service Environment (Render) or in .env and every
 # browser session is asked for it once. Left unset, as on this machine, the dashboard opens straight away.
 _GATE = cfg.setting("APP_PASSWORD")
 if _GATE and not st.session_state.get("_unlocked"):
