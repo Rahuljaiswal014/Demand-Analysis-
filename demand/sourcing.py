@@ -145,13 +145,17 @@ def product_sourcing(products: pd.DataFrame, fab: pd.DataFrame, out_matched: pd.
     """One row per ASIN: sourcing and what it rests on."""
     p = products[["asin", "main_sku", "skus", "category"]].copy()
     keys = (p["main_sku"].astype(str) + ", " + p["skus"].astype(str)).str.upper().str.split(", ")
-    fab_asin, fab_sku = set(fab["asin"].dropna()) if len(fab) else set(), set(fab["sku"]) if len(fab) else set()
+    sheet = fab[fab["row_source"] == "sheet"] if "row_source" in fab.columns else fab        # the old SKU list has no ASINs
+    fab_asin, fab_sku = set(sheet["asin"].dropna()) if len(fab) else set(), set(sheet["sku"]) if len(fab) else set()
+    old_sku = set(fab.loc[fab["row_source"] == "old list", "sku"]) if "row_source" in fab.columns else set()
     out_asin = set(out_matched["asin"].dropna())
     out_key = set(out_matched["sku"].map(_norm))
-    in_fab = p["asin"].isin(fab_asin) | keys.map(lambda ks: bool(set(ks) & fab_sku))
+    in_sheet = p["asin"].isin(fab_asin) | keys.map(lambda ks: bool(set(ks) & fab_sku))
+    in_old = keys.map(lambda ks: bool(set(ks) & old_sku))
+    in_fab = in_sheet | in_old
     in_out = p["asin"].isin(out_asin) | keys.map(lambda ks: any(_norm(k) in out_key for k in ks))
     p["sourcing"] = np.select([in_fab & in_out, in_fab, in_out], [BOTH, IN_HOUSE, OUTSOURCED], UNCLASSIFIED)
-    p["sourcing_basis"] = np.select([in_fab & in_out, in_fab, in_out], ["both sheets", "fabric sheet", "outsource sheet"], "")
+    p["sourcing_basis"] = np.select([in_fab & in_out, in_sheet, in_old, in_out], ["both sheets", "fabric sheet", "old fabric list", "outsource sheet"], "")
     # by range: a prefix whose classified products all share one sourcing passes it to its unclassified members
     p["prefix"] = p["main_sku"].map(_prefix)
     known = p[p["sourcing"].isin([IN_HOUSE, OUTSOURCED])]

@@ -88,12 +88,15 @@ product_fabric — one row per ASIN with its fabric: fabric_code (e.g. 'FAB-0030
   only the metres are known; '(none)' when the product has no fabric row), fabric_type (Polyester/Sheer/Satin/Duck/Velvet),
   fabric_family (Solid/Dimout/Printed/Blackout/Stripe/Digital Blackout), fabric_product, product_type, colour, size,
   metres_per_piece, pieces, metres_per_unit (metres of fabric one sold unit consumes), fabric_source ('sheet: ASIN' /
-  'sheet: SKU' / 'inferred: size rule' / 'outsourced: no fabric' (bought in finished, consumes no in-house fabric) /
-  'not in sheet'). Fabric consumed = SUM(sales.quantity * metres_per_unit), joined on asin.
-  Only 'sheet:' rows carry a real fabric code; always say when a figure includes inferred metres.
+  'sheet: SKU' / 'old list: code, size rule' (fabric code from the old fabric SKU list, metres by the sheet's size rule) /
+  'inferred: size rule' / 'outsourced: no fabric' (bought in finished, consumes no in-house fabric) /
+  'old list: code, no size' (code known, custom size, no metres) / 'not in sheet').
+  Fabric consumed = SUM(sales.quantity * metres_per_unit), joined on asin.
+  'sheet:' and 'old list:' rows carry a real fabric code; always say when a figure includes size-rule (estimated) metres.
 
 fabric_sheet — HomeMonde's manufacturing sheet as loaded (one row per SKU: sku, asin, fabric_code, fabric_type, fabric_family,
-  fabric_product, product_type, colour, size, metres_per_piece, pieces, metres_per_unit).
+  fabric_product, product_type, colour, size, metres_per_piece, pieces, metres_per_unit, row_source 'sheet' / 'old list';
+  'old list' rows come from the older fabric SKU list and carry only sku, fabric_code, fabric_name, type, family and colour).
 
 fabric_requirement — next 12 weeks in metres per fabric_code: baseline_m, festive_m (festive scenario), last_12w_actual_m,
   products. Built from the product-level weekly forecast x metres_per_unit.

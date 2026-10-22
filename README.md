@@ -158,7 +158,17 @@ file changes (a workbook open in Excel is fine). Joined to products by ASIN firs
 does not list get metres from the sheet's own size rule where it is unambiguous - curtain metres per piece depend on length only
 (5 ft 1.74 m ... 10 ft 3.28 m), cushion / pillow / bolster metres on cover size - and are flagged **inferred, fabric code unknown**;
 outsourced (bought-in) products are excluded, see below. 91.6% of units carry a metres
-figure. Every table shows the source, so sheet figures are never silently mixed with inferred ones. The page gives metres by
+figure.
+
+A second workbook, the **old fabric SKU list** (`Old Fabric SKU*.xlsx` in `data/raw`: SKU, product name, fabric code; no sizes
+or metres), fills older SKUs the main sheet does not carry. Rules: the main sheet always wins where both list a SKU; an old code
+that the sheet has consistently renumbered (every shared SKU says old X = sheet Y) is read as Y on the old-list rows too, so one
+fabric is not split across two codes; codes written with fewer digits are read as four-digit codes (`FAB-539` → `FAB-0539`).
+Old-list products get their fabric code from the list and their metres from the sheet's size rule (curtains by length and pack,
+bedsheets by the W x H in the SKU, one piece), flagged `old list: code, size rule` and booked under their code in every table;
+a custom-size product whose metres no rule gives is `old list: code, no size`. Both still appear on *SKUs without fabric data*
+so exact metres can be added to the main sheet later. The **Data** page shows what the list added, any renumbering and any
+padded codes. Every table shows the source, so sheet figures are never silently mixed with inferred ones. The page gives metres by
 fabric code / type / family / product type / month / place, a 12-week requirement per fabric code from the product-level forecast
 (baseline and festive scenario), a 12-month long-range view from the ML prediction, a lookup per code, and the list of products
 missing from the sheet (download it, add them to the sheet, re-ingest). The analyst can query `product_fabric`, `fabric_sheet` and

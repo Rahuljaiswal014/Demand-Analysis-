@@ -1555,15 +1555,19 @@ elif page == "Fabric consumption":
         st.stop()
     total_m = known["metres"].sum()
     inferred_m = known.loc[known["fabric_source"] == "inferred: size rule", "metres"].sum()
+    old_m = known.loc[known["fabric_source"] == FB.OLD_RULE, "metres"].sum()
     k = st.columns(5)
     k[0].metric("Fabric consumed", f"{total_m:,.0f} m")
-    k[1].metric("From the sheet", f"{total_m - inferred_m:,.0f} m")
+    k[1].metric("From the sheet", f"{total_m - inferred_m - old_m:,.0f} m",
+                help=f"Plus {old_m:,.0f} m for products on the old SKU list: fabric code from the list, metres by the sheet's size rule. "
+                     "Those metres are booked under their fabric code in every table below.")
     k[2].metric("By size rule (code unknown)", f"{inferred_m:,.0f} m")
     k[3].metric("Units with a fabric figure", f"{cov.loc['ALL', 'known_%']:.1f}%")
     k[4].metric("Fabric codes in use", f"{known.loc[~known['fabric_code'].isin([FB.UNKNOWN, '(none)']), 'fabric_code'].nunique()}")
     st.caption("Metres = units sold x the sheet's metres per unit (metres per piece x pieces per SKU). Products the sheet does not list get metres "
                "from its own size rule (curtain metres depend only on length; cushion, pillow and bolster covers on cover size) and are shown "
-               "separately as **code unknown**. Outsourced products (see *Outsourced stock*) are bought in finished and consume no in-house fabric.")
+               "separately as **code unknown**; where the old fabric SKU list names their code, they count under that code. "
+               "Outsourced products (see *Outsourced stock*) are bought in finished and consume no in-house fabric.")
     key_points(INS.fabric(dm, fabric_requirement(_mtime(), _fab_mtime(), FILT, 12), cov))
 
     FAB_TABS = ["By fabric code", "By type & family", "Over time", "Requirement (next 12 weeks)", "Long range (ML)", "By place", "Coverage & sheet",
@@ -1704,15 +1708,18 @@ elif page == "Fabric consumption":
     with tabs[6]:
         st.subheader("Units with a fabric figure, by category")
         table(cov.reset_index())
-        miss = pf[pf["fabric_source"].isin(["not in sheet", "inferred: size rule"])].copy()
+        miss = pf[pf["fabric_source"].isin(["not in sheet", "inferred: size rule", FB.OLD_RULE, FB.OLD_NOSIZE])].copy()
         miss["units_year"] = miss["asin"].map(D_ALL.groupby("asin")["quantity"].sum()).fillna(0)
         miss = miss[miss["units_year"] > 0].sort_values("units_year", ascending=False)
         st.subheader(f"Products not in the sheet ({len(miss):,}) - add these to the sheet to sharpen the numbers")
         table(miss[["main_sku", "asin", "category", "fabric_source", "size", "pieces", "metres_per_unit", "units_year", "title"]].head(300), hide_index=True, height=380,
               column_config={"title": st.column_config.TextColumn(width="large")})
         st.download_button("Download the full list (CSV)", miss.to_csv(index=False).encode(), "products_missing_from_fabric_sheet.csv", "text/csv")
+        _fab_all = FB.load_fabric()
+        _fab_old = int((_fab_all["row_source"] == "old list").sum())
         st.caption(f"Sheet loaded: {cfg.FABRIC_PARQUET.stat().st_mtime and pd.Timestamp(cfg.FABRIC_PARQUET.stat().st_mtime, unit='s'):%d %b %Y %H:%M} · "
-                   f"{len(FB.load_fabric()):,} SKUs · {FB.load_fabric()['fabric_code'].nunique()} fabric codes. Update the workbook and run `python -m demand.ingest` to refresh.")
+                   f"{len(_fab_all) - _fab_old:,} SKUs on the sheet · {_fab_old:,} more from the old fabric SKU list (code only, metres by size rule) · "
+                   f"{_fab_all['fabric_code'].nunique()} fabric codes. Update a workbook and run `python -m demand.ingest` to refresh.")
     with tabs[7]:
         ms = missing_skus(_mtime())
         if f_cats:
@@ -2050,8 +2057,23 @@ elif page == "Data":
     st.markdown(f"**Claude features run through:** {_ai_label()}  \n"
                 "**Anthropic API key:** " + ("found (used only if `AI_BACKEND=api` is set, or on a computer without Claude Code)"
                                              if cfg.ANTHROPIC_API_KEY else "not set (only needed for `AI_BACKEND=api`)"))
-    st.markdown("**Fabric sheet:** " + (f"loaded ({len(FB.load_fabric()):,} SKUs, {FB.load_fabric()['fabric_code'].nunique()} fabric codes)" if cfg.FABRIC_PARQUET.exists()
-                                        else "not loaded. Put `Fabric Consumption*.xlsx` in the project folder and run `python -m demand.ingest`."))
+    if cfg.FABRIC_PARQUET.exists():
+        _fab_all = FB.load_fabric()
+        _fab_sheet = _fab_all[_fab_all["row_source"] == "sheet"]
+        st.markdown(f"**Fabric sheet:** loaded ({len(_fab_sheet):,} SKUs, {_fab_sheet['fabric_code'].nunique()} fabric codes)")
+        _oli = FB.old_list_info()
+        if _oli:
+            _line = (f"**Old fabric SKU list:** loaded ({_oli.get('rows', 0):,} SKUs; {_oli.get('rows_added', 0):,} added with a fabric code the sheet "
+                     f"does not carry, {_oli.get('already_on_sheet', 0):,} already on the sheet)")
+            for r in _oli.get("recoded", []):
+                _line += f"  \n· its code {r['old_list']} is the sheet's {r['sheet']} ({r['skus']} SKUs): the sheet's code is used"
+            if _oli.get("padded_codes"):
+                _line += "  \n· codes written with fewer digits were read as " + ", ".join(f"{a} → {b}" for a, b in _oli["padded_codes"])
+            st.markdown(_line)
+        else:
+            st.markdown("**Old fabric SKU list:** none. Optional: put `Old Fabric SKU*.xlsx` (SKU, product name, fabric code) in `data/raw` and run `python -m demand.ingest`.")
+    else:
+        st.markdown("**Fabric sheet:** not loaded. Put `Fabric Consumption*.xlsx` in the project folder and run `python -m demand.ingest`.")
     if cfg.OUTSOURCE_PARQUET.exists():
         _o = SRC.load_outsource()
         st.markdown(f"**Outsource sheet:** loaded ({len(_o):,} SKUs, ready {_o['ready'].sum():,.0f}, virtual {_o['virtual'].sum():,.0f}, "
