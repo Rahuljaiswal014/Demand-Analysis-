@@ -60,6 +60,11 @@ FABRIC_MANIFEST = STORE_DIR / "fabric_manifest.json"
 OUTSOURCE_PARQUET = STORE_DIR / "outsource.parquet"            # latest "Outsource" stock snapshot
 OUTSOURCE_HISTORY = STORE_DIR / "outsource_history.parquet"    # every snapshot ever ingested
 OUTSOURCE_MANIFEST = STORE_DIR / "outsource_manifest.json"
+MARKETPLACE_DIR = RAW_DIR / "marketplaces"                     # other marketplaces' sales exports + the Master SKU sheet
+MARKETPLACE_PARQUET = STORE_DIR / "marketplace.parquet"        # cleaned marketplace order lines (Flipkart, Myntra, website, Ajio, Blinkit)
+MARKETPLACE_MANIFEST = STORE_DIR / "marketplace_manifest.json"
+MASTER_PARQUET = STORE_DIR / "sku_master.parquet"              # Master SKU sheet: every seller SKU -> base SKU
+MARKETPLACE_ITEMS_CSV = REF_DIR / "marketplace_items.csv"      # base SKU for items a report names without a SKU (Blinkit), filled by hand
 
 TIMEZONE = "Asia/Kolkata"                  # report timestamps are UTC; business runs on IST
 

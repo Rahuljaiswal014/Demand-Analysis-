@@ -98,6 +98,19 @@ fabric_sheet — HomeMonde's manufacturing sheet as loaded (one row per SKU: sku
   fabric_product, product_type, colour, size, metres_per_piece, pieces, metres_per_unit, row_source 'sheet' / 'old list';
   'old list' rows come from the older fabric SKU list and carry only sku, fabric_code, fabric_name, type, family and colour).
 
+marketplace_sales — order lines from the OTHER marketplaces (marketplace: 'Flipkart' / 'Myntra' / 'Website' / 'Ajio' / 'Blinkit'; Amazon.in is
+  the `sales` table), from October 2026 on, one row per order line (Flipkart: per SKU x day x location). Columns: date, month, order_id,
+  seller_sku (as the marketplace knows it), base_sku (HomeMonde's base SKU from the Master SKU sheet), sku_match ('master sheet' /
+  'not in master' / 'reference file' / 'no SKU on report'), asin (the product key: the Amazon listing of the same product, or
+  'MP:<base SKU>' for products never sold on Amazon), key_source, quantity (demand units = ordered minus cancelled; returns stay in),
+  gross_units, cancelled_units, returned_units, revenue, order_status, is_demand, state, region, district, city, category, fabric_code,
+  fabric_source, metres_per_unit, metres (quantity x metres_per_unit; NULL where the fabric is unknown). Filter is_demand = true for
+  demand. Fabric consumed per marketplace = SUM(metres) GROUP BY marketplace; add the Amazon figure from `sales` x product_fabric.
+  Blinkit lines carry no SKU (sku_match 'no SKU on report') until the business maps its item names, so they have no metres.
+
+sku_master — the Master SKU sheet: alias (a seller SKU on some marketplace), base_sku, channel ('Amazon' / 'Flipkart' / 'Myntra' /
+  'Shopify' = website / 'base' / 'old base').
+
 fabric_requirement — next 12 weeks in metres per fabric_code: baseline_m, festive_m (festive scenario), last_12w_actual_m,
   products. Built from the product-level weekly forecast x metres_per_unit.
 
@@ -163,7 +176,7 @@ def store_signature() -> str:
     this survives a git clone (Streamlit Community Cloud checks the repository out fresh, so every file is 'new')."""
     import pyarrow.parquet as pq
     return "|".join(f"{f.name}:{f.stat().st_size}:{pq.read_metadata(f).num_rows}"
-                    for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET) if f.exists())
+                    for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET, cfg.MARKETPLACE_PARQUET, cfg.MASTER_PARQUET) if f.exists())
 
 
 def _built_from(path) -> str | None:
@@ -261,6 +274,19 @@ def build_database(path: str = ":memory:") -> duckdb.DuckDBPyConnection:
     else:
         outsource_stock = pd.DataFrame({"sku": []})
     fabric_requirement = FB.requirement(sales, product_fabric).reset_index().rename(columns={"key": "fabric_code"}) if not fabric_sheet.empty else pd.DataFrame({"fabric_code": []})
+    from . import marketplace as MP
+    mp = MP.resolve(MP.load(), products, MP.load_master())
+    extra = MP.extra_products(mp)
+    if len(extra):
+        extra_sourcing = SRC.product_sourcing(extra, fabric_sheet, outsource_sheet)
+        product_fabric = pd.concat([product_fabric, FB.product_fabric(extra, fabric_sheet, set(extra_sourcing.query("sourcing == 'Outsourced'")["asin"]))], ignore_index=True)
+        product_sourcing = pd.concat([product_sourcing, extra_sourcing], ignore_index=True)
+    marketplace_sales = (mp.drop(columns=["aliases"]).merge(product_fabric[["asin", "fabric_code", "fabric_source", "metres_per_unit"]], on="asin", how="left")
+                         if len(mp) else pd.DataFrame({"marketplace": []}))
+    if len(mp):
+        marketplace_sales["metres"] = marketplace_sales["quantity"] * marketplace_sales["metres_per_unit"]
+        marketplace_sales["category"] = marketplace_sales["asin"].map(pd.concat([products, extra]).set_index("asin")["category"]) if len(extra) else \
+            marketplace_sales["asin"].map(products.set_index("asin")["category"])
 
     con = duckdb.connect(path)
     drop = ["is_demand", "is_cancelled", "is_amazon", "order_status", "sales_channel", "source_file", "last_updated",
@@ -269,7 +295,8 @@ def build_database(path: str = ":memory:") -> duckdb.DuckDBPyConnection:
     for name, frame in {"sales": sales.drop(columns=drop), "all_orders": orders, "products": products, "lifecycle": lifecycle,
                         "weather": weather, "climate_sensitivity": climate, "forecast": forecast, "prediction": prediction,
                         "product_fabric": product_fabric, "fabric_sheet": fabric_sheet, "fabric_requirement": fabric_requirement,
-                        "product_sourcing": product_sourcing, "outsource_stock": outsource_stock}.items():
+                        "product_sourcing": product_sourcing, "outsource_stock": outsource_stock,
+                        "marketplace_sales": marketplace_sales, "sku_master": MP.load_master()}.items():
         con.register("_frame", frame)
         con.execute(f"CREATE TABLE {name} AS SELECT * FROM _frame")
         con.unregister("_frame")

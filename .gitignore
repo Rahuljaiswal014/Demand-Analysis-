@@ -25,3 +25,6 @@ venv/
 # Sensitive configuration
 .env.*
 !.env.example
+# Drop folders for raw marketplace exports (the website export carries buyer contact details): the copies the tool
+# ingests are written to data/raw/marketplaces/ without those columns.
+/sales reports*/

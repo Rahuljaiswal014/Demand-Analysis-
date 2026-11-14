@@ -174,6 +174,39 @@ fabric code / type / family / product type / month / place, a 12-week requiremen
 missing from the sheet (download it, add them to the sheet, re-ingest). The analyst can query `product_fabric`, `fabric_sheet` and
 `fabric_requirement`; the AI suggestions page has a "Fabric purchase plan".
 
+**Fabric consumption by marketplace** (`demand/marketplace.py`). The sales pages of the tool read Amazon.in alone; the fabric views
+also take in the other marketplaces. Put each marketplace's monthly sales export and the **Master SKU Sheet** workbook in
+`data/raw/marketplaces/` and run `python -m demand.ingest` (or upload them on the **Data** page, which files them there). The tool
+recognises an export by its columns, whatever the file is called: Flipkart's `earn_more_report` (SKU ID, Gross Units, Cancellation
+Units ...), Myntra's order CSV (seller sku code, order release id ...), the website's order export (SKU, Website Order ID ...), Ajio's
+DropShipOrderReports (Seller SKU, Cust Order No ...) and Blinkit's Sales Summary (Item Id, UPC ...). An Amazon All Orders report
+dropped there is pointed to `data/raw/`. Rules, the same for every marketplace:
+
+- **Demand units** = units ordered minus units cancelled; returned units stay in (the goods were made and shipped), as on Amazon.
+  Flipkart's export is aggregated per SKU x day x location, so its lines carry gross, cancelled and returned units; Myntra has one
+  line per unit (`F` = cancelled, `RTO` = shipped and returned); the website's "Discount for product" lines are order-level discounts,
+  not items, and are dropped, and its `PRICE` is per unit; Ajio is Order Qty minus Cancelled Qty.
+- **Seller SKU → base SKU** through the Master sheet (its Amazon / Flipkart / Myntra / Shopify tabs, the Base tab and the
+  old → new base SKU list on Ready Inventory). A seller SKU the sheet does not know is used as it is (`not in master`; the Data page
+  lists them). Where the sheet gives one alias two bases the first tab's wins, and the Data page says how many.
+- **Base SKU → product**: the line is tied to the Amazon listing that sells the same product (its seller SKU, base SKU or any alias
+  of the base being an Amazon SKU in the order history), so it gets exactly the fabric facts that listing already has - one product,
+  the same metres whichever marketplace sold it. Products never sold on Amazon get a key of their own (`MP:<base SKU>`), a product
+  row built from the report (name, SKU, the marketplace's category word, curtain length and pack size from the name and SKU) and go
+  through the same fabric rules (sheet by SKU, old list, size rule, outsourced, not in sheet).
+- **Blinkit** names its items ("Homemonde Blackout Door Curtain (Polyester, Beige)") but gives no SKU, so its lines count as units
+  without metres until the business fills in the base SKU per item in `data/reference/marketplace_items.csv` (the tool adds every
+  new item there with a blank `base_sku`; fill it and re-ingest). The same file catches the few website lines without a SKU.
+- **Privacy**: the website export carries buyer names, phones and e-mails. The reader never loads those columns and the copy kept in
+  `data/raw/marketplaces/` is written without them; the drop folder `sales reports*/` is ignored by git.
+
+On the **Fabric consumption** page a *Marketplaces* picker at the top chooses which marketplaces every figure covers (all by
+default), and the **By marketplace** tab gives metres, coverage and codes per marketplace, fabric code x marketplace, the type and
+category mix, the month x marketplace grid and how each marketplace's SKUs were matched. **Monthly reports** and the *By month* tab
+include the marketplaces in the fabric datasets (plus "Fabric by marketplace" and "Fabric by fabric code and marketplace"); the sales
+datasets stay Amazon.in. The 12-week requirement and the long-range view rest on the Amazon history: the other marketplaces have
+reports from October 2026 only, too little to forecast. The analyst can query `marketplace_sales` and `sku_master`.
+
 **Sourcing and outsourced stock** (`demand/sourcing.py`, page "Outsourced stock"). Reads `Outsource*.xlsx` (project root or
 `data/raw`; columns Item sku, Ready stock, Virtual quantities) into `data/store/outsource.parquet`; every changed sheet is also
 appended to `data/store/outsource_history.parquet`, dated by the file's modified time, so stock movement builds up over time.
@@ -219,6 +252,10 @@ Download **All Orders** from Seller Central for the new month (the native `.txt`
 either upload it on the dashboard's **Data** page or drop it into `data/raw/` and run `python -m demand.ingest`.
 Files already ingested are skipped. Re-downloading an old month is safe and useful: rows are keyed on
 order id + order item id + SKU and the most recently updated version wins, so late cancellations are picked up.
+
+For the other marketplaces, drop the month's Flipkart / Myntra / website / Ajio / Blinkit exports (and a new Master SKU sheet when
+it changed) into `data/raw/marketplaces/`, or upload them on the Data page; the same `python -m demand.ingest` reads them. A month
+re-exported replaces the earlier copy of the same lines.
 
 ## How the data is cleaned (`demand/ingest.py`)
 
@@ -318,8 +355,10 @@ demand/insights.py      rule-based key points and action list (no AI)
 demand/plays.py         evidence tables and goals for the five AI suggestion plans
 demand/fabric.py        fabric sheet loader, product join, metres consumed, fabric requirement
 demand/sourcing.py      outsource sheet loader, SKU mapping, in-house / outsourced classification, stock cover and reorder
+demand/marketplace.py   other marketplaces' sales exports + Master SKU sheet -> marketplace.parquet, join to products for fabric by marketplace
 demand/config.py        paths and thresholds
-data/raw/               drop new reports here
+data/raw/               drop new Amazon reports here; data/raw/marketplaces/ for the other marketplaces and the Master SKU sheet
+data/reference/marketplace_items.csv   base SKU for items a marketplace report names without a SKU (Blinkit): fill in by hand
 data/reference/events.csv   festival / sale calendar shown on charts (edit freely)
 ```
 

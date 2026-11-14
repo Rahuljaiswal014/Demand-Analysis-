@@ -1,0 +1,213 @@
+{
+  "files": {
+    "Ajio Sales Report (Oct).xlsx": {
+      "size": 37480,
+      "mtime": 1794545350
+    },
+    "Blinkit Sales Report (Oct).xlsx": {
+      "size": 286347,
+      "mtime": 1794545350
+    },
+    "Flipkart Sales Report (Oct).xlsx": {
+      "size": 528386,
+      "mtime": 1794545350
+    },
+    "Myntra Sales Report (Oct).csv": {
+      "size": 7141849,
+      "mtime": 1794545350
+    },
+    "Website Sales Report (Oct).csv": {
+      "size": 2184172,
+      "mtime": 1794636146
+    },
+    "__master__": {
+      "size": 1152703,
+      "mtime": 1794545350,
+      "name": "Master SKU Sheet.xlsx"
+    },
+    "__items__": {
+      "size": 2736,
+      "mtime": 1794648899
+    }
+  },
+  "reports": {
+    "Ajio Sales Report (Oct).xlsx": {
+      "marketplace": "Ajio",
+      "rows": 115,
+      "units": 160,
+      "from": "2026-10-01",
+      "to": "2026-10-31"
+    },
+    "Blinkit Sales Report (Oct).xlsx": {
+      "marketplace": "Blinkit",
+      "rows": 1993,
+      "units": 2156,
+      "from": "2026-10-01",
+      "to": "2026-11-01"
+    },
+    "Flipkart Sales Report (Oct).xlsx": {
+      "marketplace": "Flipkart",
+      "rows": 6633,
+      "units": 10704,
+      "from": "2026-10-01",
+      "to": "2026-10-31"
+    },
+    "Myntra Sales Report (Oct).csv": {
+      "marketplace": "Myntra",
+      "rows": 11335,
+      "units": 9501,
+      "from": "2026-10-01",
+      "to": "2026-10-31"
+    },
+    "Website Sales Report (Oct).csv": {
+      "marketplace": "Website",
+      "rows": 2998,
+      "units": 3826,
+      "from": "2026-10-01",
+      "to": "2026-10-31"
+    }
+  },
+  "master": {
+    "name": "Master SKU Sheet.xlsx",
+    "aliases": 8270,
+    "bases": 6428,
+    "conflicts": [
+      {
+        "alias": "DK-HMCR_140",
+        "base_sku": "DK-RCR_140-8FT",
+        "channel": "Shopify",
+        "kept": "DK-HMCR_140"
+      },
+      {
+        "alias": "DK-HMCR_140-10FT",
+        "base_sku": "DK-RCR_140-10FT",
+        "channel": "Shopify",
+        "kept": "DK-HMCR_140-10FT"
+      },
+      {
+        "alias": "DK-HMCR_140-6FT",
+        "base_sku": "DK-RCR_140-6FT",
+        "channel": "Shopify",
+        "kept": "DK-HMCR_140-6FT"
+      },
+      {
+        "alias": "DK-HMCR_140D",
+        "base_sku": "DK-RCR_140-7FT",
+        "channel": "Shopify",
+        "kept": "DK-HMCR_140D"
+      },
+      {
+        "alias": "DK-HMCR_140LD",
+        "base_sku": "DK-RCR_140-9FT",
+        "channel": "Shopify",
+        "kept": "DK-HMCR_140LD"
+      },
+      {
+        "alias": "DK-HMCR_140W",
+        "base_sku": "DK-RCR_140-5FT",
+        "channel": "Shopify",
+        "kept": "DK-HMCR_140W"
+      },
+      {
+        "alias": "HMBD-7001-DBLU-90",
+        "base_sku": "HMBD-7001-DBLU-90X100",
+        "channel": "Myntra",
+        "kept": "HMBD-7001-DBLU-90"
+      },
+      {
+        "alias": "HMBD-7001-MRN-90",
+        "base_sku": "HMBD-7001-MRN-90X100",
+        "channel": "Myntra",
+        "kept": "HMBD-7001-MRN-90"
+      },
+      {
+        "alias": "HMBD-7001-TPE-90",
+        "base_sku": "HMBD-7001-TPE-90X100",
+        "channel": "Myntra",
+        "kept": "HMBD-7001-TAN-90"
+      },
+      {
+        "alias": "HMBD-7001-WHT-90",
+        "base_sku": "HMBD-7001-WHT-90X100",
+        "channel": "Myntra",
+        "kept": "HMBD-7001-WHT-90"
+      },
+      {
+        "alias": "HMBL-7001-DBLU-16X32-S2",
+        "base_sku": "HMBL-7001-DBLU-S2",
+        "channel": "Myntra",
+        "kept": "HMBL-7001-DBLU-16X32-S2"
+      },
+      {
+        "alias": "HMDC-6001-GRY-102X108",
+        "base_sku": "HMDC-6001-GRY-102X108INCH",
+        "channel": "Shopify",
+        "kept": "HMDC-6001-GRY-102X108"
+      },
+      {
+        "alias": "HMDC-6001-GRY-102X108INCH",
+        "base_sku": "HMDC-6001-GRY-102X108",
+        "channel": "Flipkart",
+        "kept": "HMDC-6001-GRY-102X108INCH"
+      },
+      {
+        "alias": "HMDC-6001-MRN-108X120",
+        "base_sku": "HMDC-6001-MRN-108X120INCH",
+        "channel": "Shopify",
+        "kept": "HMDC-6001-MRN-108X120"
+      },
+      {
+        "alias": "HMDC-6001-MRN-108X120INCH",
+        "base_sku": "HMDC-6001-MRN-108X120",
+        "channel": "Flipkart",
+        "kept": "HMDC-6001-MRN-108X120INCH"
+      },
+      {
+        "alias": "HMDC-6001-PNK-102X108",
+        "base_sku": "HMDC-6001-PNK-102X108INCH",
+        "channel": "Shopify",
+        "kept": "HMDC-6001-PNK-102X108"
+      },
+      {
+        "alias": "HMDC-6001-PNK-102X108INCH",
+        "base_sku": "HMDC-6001-PNK-102X108",
+        "channel": "Flipkart",
+        "kept": "HMDC-6001-PNK-102X108INCH"
+      },
+      {
+        "alias": "HMDC-6001-WHT-108X120",
+        "base_sku": "HMDC-6001-WHT-108X120INCH",
+        "channel": "Shopify",
+        "kept": "HMDC-6001-WHT-108X120"
+      },
+      {
+        "alias": "HMDC-6001-WHT-108X120INCH",
+        "base_sku": "HMDC-6001-WHT-108X120",
+        "channel": "Flipkart",
+        "kept": "HMDC-6001-WHT-108X120INCH"
+      },
+      {
+        "alias": "HMDC-7001-BRN-61X92-P1",
+        "base_sku": "HMDC-7001-BRN-61X92",
+        "channel": "Shopify",
+        "kept": "HMDC-7001-BRN-61X92-P1"
+      },
+      {
+        "alias": "HMDH-AQGR&WHT-84X94",
+        "base_sku": "HMDH-AQGR_WHT-84X94INCH",
+        "channel": "Myntra",
+        "kept": "HMDH-AQGR_WHT-84X94"
+      },
+      {
+        "alias": "HMDH-BLU&WHT-84X94",
+        "base_sku": "HMDH-BLU_WHT-84X94INCH",
+        "channel": "Myntra",
+        "kept": "HMDH-BLU_WHT-84X94"
+      }
+    ]
+  },
+  "items_without_sku": [
+    34,
+    0
+  ]
+}

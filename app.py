@@ -14,6 +14,7 @@ from demand import config as cfg
 from demand import forecast as F
 from demand import insights as INS
 from demand import fabric as FB
+from demand import marketplace as MP
 from demand import predict as ML
 from demand import sourcing as SRC
 
@@ -252,7 +253,8 @@ def inr(v: float) -> str:
 # ------------------------------------------------------------------ data
 def _mtime() -> float:
     """Cache key for everything derived from the stores: changes when the orders or either reference sheet is re-ingested."""
-    return max((f.stat().st_mtime for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET) if f.exists()), default=0.0)
+    return max((f.stat().st_mtime for f in (cfg.ORDERS_PARQUET, cfg.FABRIC_PARQUET, cfg.OUTSOURCE_PARQUET, cfg.MARKETPLACE_PARQUET, cfg.MASTER_PARQUET)
+                if f.exists()), default=0.0)
 
 
 @st.cache_resource(show_spinner="Loading order store …")
@@ -320,16 +322,45 @@ def ml_validation(mtime: float) -> tuple:
     return ML.validate_blocked(d, weather), ML.validate(d, weather)
 
 
+@st.cache_resource(show_spinner="Reading the marketplace reports …")
+def marketplaces(mtime: float) -> tuple:
+    """(marketplace demand lines in the shape of the Amazon demand frame, product rows for marketplace-only products, every
+    marketplace line). Empty frames when no marketplace report is loaded. Each marketplace line is keyed to the Amazon listing
+    of the same product where there is one, so the fabric facts are the same whichever marketplace sold it."""
+    orders, _, products, _ = load(mtime)
+    mp = MP.resolve(MP.load(), products, MP.load_master())
+    extra = MP.extra_products(mp)
+    om, ps = sourcing_tables(mtime)
+    sourcing = ps.set_index("asin")["sourcing"]
+    if len(extra):
+        sourcing = pd.concat([sourcing, SRC.product_sourcing(extra, FB.load_fabric(), om).set_index("asin")["sourcing"]])
+    return MP.demand_frame(mp, products, extra, sourcing), extra, mp
+
+
+def all_products(mtime: float) -> pd.DataFrame:
+    """Amazon listings plus the marketplace-only products, one row each, in the shape of products.parquet."""
+    products, extra = load(mtime)[2], marketplaces(mtime)[1]
+    return pd.concat([products, extra[products.columns]], ignore_index=True) if len(extra) else products
+
+
 @st.cache_data(show_spinner="Joining the fabric sheet …")
 def fabric_map(mtime: float, fab_mtime: float) -> pd.DataFrame:
+    """Fabric facts per product key: Amazon listings and marketplace-only products through the same rules."""
     ps = sourcing_tables(mtime)[1]
-    return FB.product_fabric(load(mtime)[2], FB.load_fabric(), set(ps.loc[ps["sourcing"] == SRC.OUTSOURCED, "asin"]))
+    extra = marketplaces(mtime)[1]
+    outsourced = set(ps.loc[ps["sourcing"] == SRC.OUTSOURCED, "asin"])
+    if len(extra):
+        pe = SRC.product_sourcing(extra, FB.load_fabric(), sourcing_tables(mtime)[0])
+        outsourced |= set(pe.loc[pe["sourcing"] == SRC.OUTSOURCED, "asin"])
+    return FB.product_fabric(all_products(mtime), FB.load_fabric(), outsourced)
 
 
 @st.cache_data(show_spinner="Listing SKUs without fabric data …")
 def missing_skus(mtime: float) -> pd.DataFrame:
     _, d, products, _ = load(mtime)
-    return FB.missing_skus(fabric_map(mtime, _fab_mtime()), d, products)
+    mp_d = marketplaces(mtime)[0]
+    both = pd.concat([d[["date", "sku", "asin", "quantity"]], mp_d[["date", "sku", "asin", "quantity"]]], ignore_index=True) if len(mp_d) else d
+    return FB.missing_skus(fabric_map(mtime, _fab_mtime()), both, all_products(mtime))
 
 
 def _fab_mtime() -> float:
@@ -374,6 +405,8 @@ if not cfg.ORDERS_PARQUET.exists():
     st.stop()
 
 ORDERS, D_ALL, PRODUCTS, WEATHER = load(_mtime())
+MP_D, MP_EXTRA, MP_ALL = marketplaces(_mtime())                   # other marketplaces' demand lines (fabric views only); empty without reports
+MKTS = [MP.AMAZON] + [m for m in MP.MARKETPLACES[1:] if m in set(MP_D["marketplace"])] if len(MP_D) else [MP.AMAZON]
 CATS = D_ALL.groupby("category")["quantity"].sum().sort_values(ascending=False).index.tolist()
 N_MONTHS = D_ALL["month"].nunique()                              # months of history, used in captions instead of a fixed number
 HIST_SPAN = f"{D_ALL['date'].min():%b %Y} to {D_ALL['date'].max():%b %Y}"
@@ -634,7 +667,12 @@ if f_sourcing:
 D = D_ALL if bool(mask.all()) else D_ALL[mask]          # no filter, no copy: the unfiltered view is the common case
 FILT = (str(start), str(end), tuple(f_cats), tuple(f_regions), tuple(f_states), tuple(f_districts), tuple(f_sourcing))
 TITLES = PRODUCTS.set_index("asin")["title"]
+if len(MP_EXTRA):
+    TITLES = pd.concat([TITLES, MP_EXTRA.set_index("asin")["title"]])
 SKU_TITLE = D_ALL.drop_duplicates("sku").set_index("sku")["asin"].map(TITLES)
+if len(MP_D):
+    _mp_t = MP_D.drop_duplicates("main_sku").set_index("main_sku")["asin"].map(TITLES)
+    SKU_TITLE = pd.concat([SKU_TITLE, _mp_t[~_mp_t.index.isin(SKU_TITLE.index)]])
 ITEM_LEVELS = {"SKU (aliases merged)": "main_sku", "SKU (raw, as in report)": "sku", "Design family": "family", "Category": "category"}
 
 # ------------------------------------------------------------------ monthly reports
@@ -644,9 +682,27 @@ for _col, _vals in (("category", f_cats), ("region", f_regions), ("state", f_sta
     if _vals:
         _m2 &= D_ALL[_col].isin(_vals)
 D_M = D_ALL if bool(_m2.all()) else D_ALL[_m2]
+_m3 = pd.Series(True, index=MP_D.index)
+for _col, _vals in (("category", f_cats), ("region", f_regions), ("state", f_states), ("district", f_districts), ("sourcing", f_sourcing)):
+    if _vals:
+        _m3 &= MP_D[_col].isin(_vals)
+MP_M = MP_D if bool(_m3.all()) else MP_D[_m3]
 FILT_NF = (tuple(f_cats), tuple(f_regions), tuple(f_states), tuple(f_districts), tuple(f_sourcing))
 MONTHS = sorted(D_M["month"].unique())
 ALL_MONTHS = "All months"
+# the columns the fabric views read from a demand line; Amazon lines are cut to these before marketplace lines are stacked under them
+FAB_COLS = ["date", "month", "week", "asin", "sku", "main_sku", "quantity", "revenue", "order_id", "category", "state", "region", "district", "sourcing"]
+
+
+def fabric_demand(amz: pd.DataFrame, mp: pd.DataFrame, mkts) -> pd.DataFrame:
+    """Demand lines for the fabric views: Amazon lines and the other marketplaces' lines, each tagged with its marketplace,
+    for the marketplaces in `mkts`. Every other page keeps reading the Amazon frame alone."""
+    parts = []
+    if MP.AMAZON in mkts:
+        parts.append(amz[FAB_COLS].assign(marketplace=MP.AMAZON))
+    if len(mp):
+        parts.append(mp.loc[mp["marketplace"].isin(mkts), FAB_COLS + ["marketplace"]])
+    return pd.concat(parts, ignore_index=True) if parts else amz[FAB_COLS].iloc[0:0].assign(marketplace="")
 
 
 def month_name(m: str) -> str:
@@ -664,12 +720,12 @@ ORDER_LINE_COLS = ["date", "order_id", "sku", "main_sku", "asin", "product_name"
 
 
 @st.cache_data(show_spinner="Preparing the month's tables …")
-def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str) -> dict:
+def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str, mkts: tuple = (MP.AMAZON,)) -> dict:
     """Every dataset the tool can hand out for one month (or all months): name -> DataFrame. Grouped tables carry a `month`
     column when all months are asked for, so one file holds the month-by-month figures."""
     d = D_M if month == ALL_MONTHS else D_M[D_M["month"] == month]
     by_m = ["month"] if month == ALL_MONTHS else []
-    title = PRODUCTS.set_index("asin")["title"]
+    title = TITLES
     out = {}
     out["Order lines"] = d[[c for c in ORDER_LINE_COLS if c in d.columns]].sort_values("date")
     sku = d.groupby(by_m + ["main_sku"]).agg(units=("quantity", "sum"), revenue=("revenue", "sum"), orders=("order_id", "nunique"),
@@ -685,7 +741,10 @@ def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str)
         out[name] = g.sort_values(by_m + ["units"], ascending=[True] * len(by_m) + [False])
     out["Daily units"] = d.groupby("date").agg(units=("quantity", "sum"), revenue=("revenue", "sum"), orders=("order_id", "nunique")).reset_index()
     if cfg.FABRIC_PARQUET.exists():
-        dm = FB.with_metres(d, fabric_map(mtime, fab_mtime))
+        # fabric tables take in every marketplace asked for; the sales tables above stay Amazon.in
+        mp_m = MP_M if month == ALL_MONTHS else MP_M[MP_M["month"] == month]
+        d_f = fabric_demand(d, mp_m, mkts)
+        dm = FB.with_metres(d_f, fabric_map(mtime, fab_mtime))
         known = dm.dropna(subset=["metres"])
         fc = known.groupby(by_m + ["fabric_key"]).agg(metres=("metres", "sum"), units=("quantity", "sum"), products=("asin", "nunique"),
                                                       fabric_type=("fabric_type", "first"), fabric_family=("fabric_family", "first"),
@@ -701,8 +760,21 @@ def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str)
         fs["fabric_code"] = fs["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
         fs["title"] = fs["asin"].map(title).str[:80]
         out["Fabric by SKU"] = fs.sort_values(by_m + ["metres"], ascending=[True] * len(by_m) + [False])
-        piv = FB.with_metres(D_M, fabric_map(mtime, fab_mtime)).dropna(subset=["metres"]).pivot_table(index="fabric_key", columns="month", values="metres",
-                                                                                                       aggfunc="sum", fill_value=0).round(0)
+        if len(mkts) > 1:
+            allu = dm.groupby(by_m + ["marketplace"])["quantity"].sum().rename("units_all")      # every marketplace, with or without a fabric figure yet
+            fm = known.groupby(by_m + ["marketplace"]).agg(metres=("metres", "sum"), units_with_fabric_figure=("quantity", "sum"), products=("asin", "nunique"),
+                                                           fabric_codes=("fabric_key", lambda s: s[~s.isin([FB.UNKNOWN, "(none)"])].nunique()))
+            fm = fm.reindex(allu.index).fillna(0).join(allu).reset_index()
+            fm["metres"] = fm["metres"].round(1)
+            fm["units_with_fabric_figure_%"] = (fm["units_with_fabric_figure"] / fm["units_all"] * 100).round(1)
+            out["Fabric by marketplace"] = fm.sort_values(by_m + ["metres"], ascending=[True] * len(by_m) + [False])
+            fmc = known.pivot_table(index=by_m + ["fabric_key"], columns="marketplace", values="metres", aggfunc="sum", fill_value=0).round(1)
+            fmc.insert(0, "total_metres", fmc.sum(axis=1).round(1))
+            fmc = fmc.reset_index().rename(columns={"fabric_key": "fabric_code"})
+            fmc["fabric_code"] = fmc["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
+            out["Fabric by fabric code and marketplace"] = fmc.sort_values(by_m + ["total_metres"], ascending=[True] * len(by_m) + [False])
+        piv = FB.with_metres(fabric_demand(D_M, MP_M, mkts), fabric_map(mtime, fab_mtime)).dropna(subset=["metres"]).pivot_table(
+            index="fabric_key", columns="month", values="metres", aggfunc="sum", fill_value=0).round(0)
         piv.insert(0, "total_metres", piv.sum(axis=1))
         piv = piv.sort_values("total_metres", ascending=False).reset_index().rename(columns={"fabric_key": "fabric_code"})
         piv["fabric_code"] = piv["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
@@ -716,10 +788,10 @@ def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str)
 
 
 @st.cache_data(show_spinner="Building the Excel workbook …")
-def monthly_workbook(mtime: float, fab_mtime: float, filt_nf: tuple, month: str) -> bytes:
+def monthly_workbook(mtime: float, fab_mtime: float, filt_nf: tuple, month: str, mkts: tuple = (MP.AMAZON,)) -> bytes:
     """One workbook with every dataset for the month. For all months the order lines are left out (hundreds of thousands of rows)."""
     import io
-    ds = monthly_datasets(mtime, fab_mtime, filt_nf, month)
+    ds = monthly_datasets(mtime, fab_mtime, filt_nf, month, mkts)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in ds.items():
@@ -736,9 +808,10 @@ def monthly_workbook(mtime: float, fab_mtime: float, filt_nf: tuple, month: str)
     return buf.getvalue()
 
 
-def fabric_month_block(month: str, key: str):
-    """Fabric consumption of one month (or all months): by fabric code, by SKU, and the code x month grid, each downloadable."""
-    ds = monthly_datasets(_mtime(), _fab_mtime(), FILT_NF, month)
+def fabric_month_block(month: str, key: str, mkts: tuple):
+    """Fabric consumption of one month (or all months) on the marketplaces in `mkts`: by fabric code, by SKU, by marketplace, and the
+    code x month grid, each downloadable."""
+    ds = monthly_datasets(_mtime(), _fab_mtime(), FILT_NF, month, mkts)
     if "Fabric by fabric code" not in ds:
         st.info("No fabric sheet loaded.")
         return
@@ -749,6 +822,19 @@ def fabric_month_block(month: str, key: str):
     k[1].metric("Units with a fabric figure", f"{fc['units'].sum():,.0f}")
     k[2].metric("Fabric codes used", f"{fc.loc[fc['fabric_code'] != NO_CODE, 'fabric_code'].nunique():,}")
     k[3].metric("SKUs", f"{fs['main_sku'].nunique():,}")
+    if "Fabric by marketplace" in ds:
+        fm = ds["Fabric by marketplace"]
+        with card(f"By marketplace · {month_name(month)}", "metres with a fabric figure per marketplace, and how much of each marketplace's units that covers"):
+            c1, c2 = st.columns([2, 3])
+            with c1:
+                show(hbar(fm.groupby("marketplace")["metres"].sum().sort_values(), height=max(160, 30 * fm["marketplace"].nunique() + 60)))
+            with c2:
+                table(fm, hide_index=True, height=max(160, 36 * (len(fm) + 1) + 4), column_config={
+                    "metres": st.column_config.NumberColumn("Metres", format="localized"), "units_with_fabric_figure": st.column_config.NumberColumn("Units with figure", format="localized"),
+                    "units_all": st.column_config.NumberColumn("Units sold", format="localized"), "units_with_fabric_figure_%": st.column_config.NumberColumn("Covered %", format="%.1f"),
+                    "fabric_codes": st.column_config.NumberColumn("Codes")})
+            st.download_button("Download fabric code x marketplace (CSV)", ds["Fabric by fabric code and marketplace"].to_csv(index=False).encode(),
+                               f"fabric_by_code_and_marketplace_{tag}.csv", "text/csv", key=f"{key}_dl_mkt")
     c1, c2 = st.columns([2, 3])
     with c1:
         with card(f"By fabric code · {month_name(month)}", "metres = units sold × metres per unit from the sheet"):
@@ -1547,8 +1633,20 @@ elif page == "Fabric consumption":
         st.warning("No fabric sheet loaded. Put `Fabric Consumption*.xlsx` in the project folder and run `python -m demand.ingest`.")
         st.stop()
     pf = fabric_map(_mtime(), _fab_mtime())
-    dm = FB.with_metres(D, pf)
-    cov = FB.coverage(D, pf)
+    if len(MKTS) > 1:
+        _pick = st.pills("Marketplaces", MKTS, selection_mode="multi", default=MKTS, key="fab_mkts",
+                         help="Every figure on this page is for the marketplaces picked here. Amazon.in comes from the order store; the others from "
+                              "the marketplace reports (see the Data page). The sidebar filters apply to all of them.")
+        MK = tuple(m for m in MKTS if m in (_pick or []))
+        if not MK:
+            st.info("Pick at least one marketplace.")
+            st.stop()
+    else:
+        MK = (MP.AMAZON,)
+    MP_F = MP_M[MP_M["date"].between(pd.Timestamp(start), pd.Timestamp(end))] if len(MP_M) else MP_M
+    D_F = fabric_demand(D, MP_F, MK)                         # Amazon lines + the other marketplaces' lines, each tagged with its marketplace
+    dm = FB.with_metres(D_F, pf)
+    cov = FB.coverage(D_F, pf)
     known = dm.dropna(subset=["metres"])
     if known.empty:
         st.info("The products in this view consume no in-house fabric (outsourced, or not on the fabric sheet). Change the filters to see fabric consumption.")
@@ -1557,7 +1655,8 @@ elif page == "Fabric consumption":
     inferred_m = known.loc[known["fabric_source"] == "inferred: size rule", "metres"].sum()
     old_m = known.loc[known["fabric_source"] == FB.OLD_RULE, "metres"].sum()
     k = st.columns(5)
-    k[0].metric("Fabric consumed", f"{total_m:,.0f} m")
+    k[0].metric("Fabric consumed", f"{total_m:,.0f} m", help="On " + ", ".join(MK) + ("" if len(MK) == 1 else
+                ". The 'By marketplace' tab splits it; the sales pages of this tool stay Amazon.in."))
     k[1].metric("From the sheet", f"{total_m - inferred_m - old_m:,.0f} m",
                 help=f"Plus {old_m:,.0f} m for products on the old SKU list: fabric code from the list, metres by the sheet's size rule. "
                      "Those metres are booked under their fabric code in every table below.")
@@ -1567,14 +1666,17 @@ elif page == "Fabric consumption":
     st.caption("Metres = units sold x the sheet's metres per unit (metres per piece x pieces per SKU). Products the sheet does not list get metres "
                "from its own size rule (curtain metres depend only on length; cushion, pillow and bolster covers on cover size) and are shown "
                "separately as **code unknown**; where the old fabric SKU list names their code, they count under that code. "
-               "Outsourced products (see *Outsourced stock*) are bought in finished and consume no in-house fabric.")
+               "Outsourced products (see *Outsourced stock*) are bought in finished and consume no in-house fabric."
+               + (" Lines from Flipkart, Myntra, the website, Ajio and Blinkit are tied to the Amazon listing of the same product through the Master SKU "
+                  "sheet, so a product consumes the same metres whichever marketplace sold it." if len(MKTS) > 1 else ""))
     key_points(INS.fabric(dm, fabric_requirement(_mtime(), _fab_mtime(), FILT, 12), cov))
 
-    FAB_TABS = ["By fabric code", "By type & family", "Over time", "Requirement (next 12 weeks)", "Long range (ML)", "By place", "Coverage & sheet",
-                "SKUs without fabric data", "By month"]
+    FAB_TABS = ["By fabric code"] + (["By marketplace"] if len(MKTS) > 1 else []) + ["By type & family", "Over time", "Requirement (next 12 weeks)",
+                                                                                     "Long range (ML)", "By place", "Coverage & sheet", "SKUs without fabric data", "By month"]
     _tab = st.query_params.get("tab", "")                        # ?page=Fabric consumption&tab=SKUs without fabric data opens that tab
     tabs = st.tabs(FAB_TABS, default=_tab if _tab in FAB_TABS else None)
-    with tabs[0]:
+    T = dict(zip(FAB_TABS, tabs))
+    with T["By fabric code"]:
         bf = FB.by_fabric(dm)
         c1, c2 = st.columns([2, 3])
         with c1:
@@ -1596,8 +1698,91 @@ elif page == "Fabric consumption":
             prods["title"] = prods.index.map(SKU_TITLE).astype(str).str[:60]
             table(prods.reset_index(), hide_index=True, height=260)
         st.caption(f"{code}: {x['fabric_type'].iloc[0]} · {x['fabric_family'].iloc[0]} · colours: {', '.join(sorted(x['colour'].dropna().unique()))} · "
-                   f"{x['asin'].nunique()} products")
-    with tabs[1]:
+                   f"{x['asin'].nunique()} products" + (f" · by marketplace: " + ", ".join(f"{m} {v:,.0f} m" for m, v in x.groupby("marketplace")["metres"].sum()
+                                                                                             .sort_values(ascending=False).items()) if len(MK) > 1 else ""))
+    if "By marketplace" in T:
+        with T["By marketplace"]:
+            # every marketplace picked gets a row, including one whose lines have no fabric figure yet (Blinkit until its items are mapped)
+            bm = known.groupby("marketplace").agg(metres=("metres", "sum"), units_with_figure=("quantity", "sum"), products=("asin", "nunique"),
+                                                  fabric_codes=("fabric_code", lambda s_: s_[~s_.isin([FB.UNKNOWN, "(none)"])].nunique()))
+            bm = bm.reindex([m for m in MK if m in set(dm["marketplace"])]).fillna(0)
+            bm["units_sold"] = dm.groupby("marketplace")["quantity"].sum().reindex(bm.index).fillna(0).astype(int)
+            bm["covered_%"] = (bm["units_with_figure"] / bm["units_sold"].replace(0, np.nan) * 100).round(1)
+            bm["share_of_metres_%"] = (bm["metres"] / bm["metres"].sum() * 100).round(1)
+            bm["metres_per_unit"] = (bm["metres"] / bm["units_with_figure"].replace(0, np.nan)).round(2)
+            c1, c2 = st.columns([2, 3])
+            with c1:
+                st.subheader("Metres by marketplace")
+                show(hbar(bm["metres"].sort_values(), height=max(200, 34 * len(bm) + 60)))
+            with c2:
+                st.subheader("Units, coverage and codes")
+                table(bm.round(0).reset_index(), hide_index=True, height=max(200, 36 * (len(bm) + 1) + 4), column_config={
+                    "marketplace": st.column_config.TextColumn("Marketplace", pinned=True), "metres": st.column_config.NumberColumn("Metres", format="localized"),
+                    "units_with_figure": st.column_config.NumberColumn("Units with a fabric figure", format="localized"),
+                    "units_sold": st.column_config.NumberColumn("Units sold", format="localized"), "covered_%": st.column_config.NumberColumn("Covered %", format="%.1f"),
+                    "share_of_metres_%": st.column_config.NumberColumn("Share of metres %", format="%.1f"), "fabric_codes": st.column_config.NumberColumn("Fabric codes"),
+                    "metres_per_unit": st.column_config.NumberColumn("m / unit", format="%.2f")})
+                st.caption("Covered % = units that reached a fabric figure (sheet, old list or size rule). The rest are outsourced, not on either fabric "
+                           "list, or (Blinkit) sold under an item name the report gives no SKU for.")
+            _kc = known[~known["fabric_code"].isin([FB.UNKNOWN, "(none)"])]
+            st.subheader("Top 20 fabric codes by marketplace, metres")
+            pc = _kc.pivot_table(index="fabric_code", columns="marketplace", values="metres", aggfunc="sum", fill_value=0)
+            pc = pc.reindex(columns=[m for m in MK if m in pc.columns])
+            pc = pc.loc[pc.sum(axis=1).sort_values(ascending=False).index[:20]]
+            show(heat(pc.round(0), diverging_mid=None, height=max(360, 24 * len(pc) + 80)))
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Fabric type mix by marketplace (% of metres)")
+                pt = known.pivot_table(index="marketplace", columns="fabric_type", values="metres", aggfunc="sum", fill_value=0)
+                pt = pt.reindex([m for m in MK if m in pt.index])
+                show(heat((pt.div(pt.sum(axis=1), axis=0) * 100).round(0), diverging_mid=None, height=max(220, 40 * len(pt) + 80)))
+            with c2:
+                st.subheader("Category mix by marketplace (% of metres)")
+                pcat = known.pivot_table(index="category", columns="marketplace", values="metres", aggfunc="sum", fill_value=0)
+                pcat = pcat.reindex(columns=[m for m in MK if m in pcat.columns])
+                pcat = (pcat.div(pcat.sum(axis=0), axis=1) * 100).round(0)
+                show(heat(pcat.loc[pcat.max(axis=1).sort_values(ascending=False).index], diverging_mid=None, height=max(220, 26 * len(pcat) + 80)))
+            st.subheader("Metres by month and marketplace")
+            pm = known.pivot_table(index="month", columns="marketplace", values="metres", aggfunc="sum", fill_value=0).round(0)
+            pm = pm.reindex(columns=[m for m in MK if m in pm.columns])
+            pm.insert(0, "total_metres", pm.sum(axis=1))
+            table(pm.reset_index(), hide_index=True, height=min(520, 36 * (len(pm) + 1) + 4),
+                  column_config={c_: st.column_config.NumberColumn(c_, format="localized") for c_ in pm.columns})
+            st.caption("The marketplace reports start in October 2026; Amazon.in runs from the start of the order store. Months before a marketplace's "
+                       "first report show 0 for it, not no sales.")
+            st.subheader("Every fabric code by marketplace")
+            pall = _kc.pivot_table(index="fabric_code", columns="marketplace", values="metres", aggfunc="sum", fill_value=0).round(0)
+            pall = pall.reindex(columns=[m for m in MK if m in pall.columns])
+            pall.insert(0, "total_metres", pall.sum(axis=1))
+            _first = _kc.drop_duplicates("fabric_code").set_index("fabric_code")
+            pall.insert(0, "fabric_family", _first["fabric_family"].reindex(pall.index))
+            pall.insert(0, "fabric_type", _first["fabric_type"].reindex(pall.index))
+            pall = pall.sort_values("total_metres", ascending=False)
+            table(pall.reset_index(), hide_index=True, height=min(600, 35 * (len(pall) + 1) + 4), column_config={
+                "fabric_code": st.column_config.TextColumn("Fabric code", pinned=True), "total_metres": st.column_config.NumberColumn("Total metres", format="localized")}
+                | {m: st.column_config.NumberColumn(m, format="localized") for m in MK})
+            st.download_button("Download fabric code x marketplace (CSV)", pall.to_csv().encode(), "fabric_codes_by_marketplace.csv", "text/csv", key="fab_mkt_dl")
+            st.subheader("How each marketplace's SKUs were matched")
+            _mp_scope = MP_ALL[MP_ALL["marketplace"].isin(MK) & MP_ALL["date"].between(pd.Timestamp(start), pd.Timestamp(end))]
+            if len(_mp_scope):
+                ms_ = MP.mapping_summary(_mp_scope, pf).reset_index()
+                table(ms_, hide_index=True, height=36 * (len(ms_) + 1) + 4, column_config={
+                    "marketplace": st.column_config.TextColumn("Marketplace", pinned=True), "lines": st.column_config.NumberColumn("Lines", format="localized"),
+                    "units": st.column_config.NumberColumn("Units", format="localized"), "products": st.column_config.NumberColumn("Products"),
+                    "units_master_sheet": st.column_config.NumberColumn("Units: SKU in Master sheet", format="localized"),
+                    "units_not_in_master": st.column_config.NumberColumn("Units: SKU not in Master", format="localized"),
+                    "units_no_sku": st.column_config.NumberColumn("Units: no SKU on report", format="localized"),
+                    "units_amazon_listing": st.column_config.NumberColumn("Units tied to an Amazon listing", format="localized"),
+                    "units_with_fabric_figure": st.column_config.NumberColumn("Units with a fabric figure", format="localized"),
+                    "fabric_figure_%": st.column_config.NumberColumn("Fabric figure %", format="%.1f")})
+                _items = MP.info().get("items_without_sku")
+                st.caption("A seller SKU is read through the Master SKU sheet to its base SKU, then tied to the Amazon listing that sells the same product "
+                           "(seller SKU, base SKU or any alias of the base), so it gets the fabric facts that listing already has; products never sold on Amazon "
+                           "go through the fabric sheet by SKU and the size rule on their own. **Not in Master** = the seller SKU is used as it is. "
+                           "**No SKU on report** = Blinkit names the item but gives no SKU: fill in the base SKU for each item in "
+                           f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` and run `python -m demand.ingest`"
+                           + (f" ({_items[1]} of {_items[0]} items filled so far)." if _items else "."))
+    with T["By type & family"]:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Metres by fabric type")
@@ -1608,7 +1793,7 @@ elif page == "Fabric consumption":
         st.subheader("Metres by product type")
         table(FB.by_fabric(dm, "product_type").reset_index(), hide_index=True, height=380,
               column_config={"growth_4w_%": st.column_config.NumberColumn("4 wk growth %", format="%+.1f")})
-    with tabs[2]:
+    with T["Over time"]:
         dim = st.segmented_control("Series", ["fabric_type", "fabric_family", "fabric_code"], default="fabric_type", format_func=pretty, key="fab_dim")
         mm = FB.monthly(dm, dim, top=None)                       # every row of the series, not only the largest
         _known_k = known if dim != "fabric_code" else known[~known["fabric_code"].isin([FB.UNKNOWN, "(none)"])]
@@ -1666,7 +1851,7 @@ elif page == "Fabric consumption":
             st.download_button("Download this table (CSV)", view.round(0).to_csv().encode(), "fabric_codes_metres_by_month.csv", "text/csv")
             st.caption("One row per fabric code on the fabric sheet, with its type, family, colours and metres consumed each month. The sidebar filters "
                        "(period, category, place, sourcing) change the metres; the filters above choose which codes are listed.")
-    with tabs[3]:
+    with T["Requirement (next 12 weeks)"]:
         horizon = st.slider("Weeks ahead", 4, 16, 12, key="fab_h")
         req = fabric_requirement(_mtime(), _fab_mtime(), FILT, horizon)
         if req.empty:
@@ -1685,16 +1870,19 @@ elif page == "Fabric consumption":
                                  f"last_{horizon}w_actual_m": st.column_config.NumberColumn(f"last {horizon} wk actual m", format="localized")})
             st.download_button("Download requirement (CSV)", req.to_csv().encode(), "fabric_requirement.csv", "text/csv")
             st.caption(f"Product-level weekly forecast (baseline and the Diwali-aligned festive scenario) x metres per unit. With {cfg.PRODUCTION_WEEKS} weeks "
-                       "of production, fabric for the festive weeks must already be in hand; treat the festive column as the upside case.")
-    with tabs[4]:
+                       "of production, fabric for the festive weeks must already be in hand; treat the festive column as the upside case."
+                       + (" The forecast rests on the Amazon.in history; the other marketplaces have one month of reports, too little to forecast, "
+                          "so their share comes on top of these figures." if len(MKTS) > 1 else ""))
+    with T["Long range (ML)"]:
         st.subheader("Metres per month by fabric code, next 12 months (ML prediction)")
         pred = ml_predict(_mtime(), "2027-12-31", "revert", 0.0)
         lr = FB.monthly_requirement(pred, D, pf)
         lr.columns = ["fabric type"] + [pd.Period(c).strftime("%b %y") for c in lr.columns[1:]]
         table(lr.head(25))
         st.caption("Category-level ML prediction (climate normals + festival calendar, 0% growth) split across products by their last-12-week share, "
-                   "then x metres per unit. The product mix inside each category is held at today's; the month-to-month shape comes from the model.")
-    with tabs[5]:
+                   "then x metres per unit. The product mix inside each category is held at today's; the month-to-month shape comes from the model."
+               + (" Amazon.in only: the prediction model is trained on the Amazon order history." if len(MKTS) > 1 else ""))
+    with T["By place"]:
         lvl = st.segmented_control("Level", ["region", "state", "district"], default="region", format_func=pretty, key="fab_place")
         g = known[known[lvl].str.upper() != "UNKNOWN"].groupby(lvl)["metres"].sum().sort_values(ascending=False)
         c1, c2 = st.columns([1, 1])
@@ -1705,11 +1893,14 @@ elif page == "Fabric consumption":
             st.subheader(f"Fabric type mix by {lvl} (metres)")
             piv = known[known[lvl].isin(g.head(10).index)].pivot_table(index=lvl, columns="fabric_type", values="metres", aggfunc="sum", fill_value=0)
             show(heat((piv.div(piv.sum(axis=1), axis=0) * 100).round(0).loc[g.head(10).index.intersection(piv.index)], diverging_mid=None, height=330))
-    with tabs[6]:
+    with T["Coverage & sheet"]:
         st.subheader("Units with a fabric figure, by category")
         table(cov.reset_index())
         miss = pf[pf["fabric_source"].isin(["not in sheet", "inferred: size rule", FB.OLD_RULE, FB.OLD_NOSIZE])].copy()
-        miss["units_year"] = miss["asin"].map(D_ALL.groupby("asin")["quantity"].sum()).fillna(0)
+        _units_all = D_ALL.groupby("asin")["quantity"].sum()
+        if len(MP_D):
+            _units_all = _units_all.add(MP_D[MP_D["marketplace"].isin(MK)].groupby("asin")["quantity"].sum(), fill_value=0)
+        miss["units_year"] = miss["asin"].map(_units_all).fillna(0)
         miss = miss[miss["units_year"] > 0].sort_values("units_year", ascending=False)
         st.subheader(f"Products not in the sheet ({len(miss):,}) - add these to the sheet to sharpen the numbers")
         table(miss[["main_sku", "asin", "category", "fabric_source", "size", "pieces", "metres_per_unit", "units_year", "title"]].head(300), hide_index=True, height=380,
@@ -1720,14 +1911,16 @@ elif page == "Fabric consumption":
         st.caption(f"Sheet loaded: {cfg.FABRIC_PARQUET.stat().st_mtime and pd.Timestamp(cfg.FABRIC_PARQUET.stat().st_mtime, unit='s'):%d %b %Y %H:%M} · "
                    f"{len(_fab_all) - _fab_old:,} SKUs on the sheet · {_fab_old:,} more from the old fabric SKU list (code only, metres by size rule) · "
                    f"{_fab_all['fabric_code'].nunique()} fabric codes. Update a workbook and run `python -m demand.ingest` to refresh.")
-    with tabs[7]:
+    with T["SKUs without fabric data"]:
         ms = missing_skus(_mtime())
         if f_cats:
             ms = ms[ms["category"].isin(f_cats)]
         k = st.columns(4)
-        k[0].metric("SKUs without fabric data", f"{len(ms):,}", help="Every SKU name; a listing sold under two SKUs counts twice.")
+        k[0].metric("SKUs without fabric data", f"{len(ms):,}", help="Every SKU name; a listing sold under two SKUs counts twice."
+                    + (" Units count sales on every marketplace loaded." if len(MKTS) > 1 else ""))
         k[1].metric("Listings (ASINs)", f"{ms['asin'].nunique():,}")
-        k[2].metric("Units sold in the year", f"{ms['units_year'].sum():,.0f}", help=f"{ms['units_year'].sum() / max(D_ALL['quantity'].sum(), 1) * 100:.1f}% of all units")
+        k[2].metric("Units sold in the year", f"{ms['units_year'].sum():,.0f}",
+                    help=f"{ms['units_year'].sum() / max(D_ALL['quantity'].sum() + (MP_D['quantity'].sum() if len(MP_D) else 0), 1) * 100:.1f}% of all units")
         k[3].metric("Selling in the last 8 weeks", f"{int((ms['units_8w'] > 0).sum()):,}")
         c1, c2, c3 = st.columns([5, 6, 6])
         with c1:
@@ -1774,13 +1967,14 @@ elif page == "Fabric consumption":
         st.caption("**Estimated** = the tool works out metres from the sheet's size rule (curtain length, cover size) but has no fabric code. "
                    "**No data** = no fabric figure at all. Outsourced products are left out: they are bought in finished and need no fabric data. "
                    "Add these SKUs to the fabric sheet and run `python -m demand.ingest`; they then drop off this list.")
-    with tabs[8]:
+    with T["By month"]:
         _fm = st.selectbox("Month", [ALL_MONTHS] + MONTHS[::-1], index=1 if MONTHS else 0, format_func=month_name, key="fab_month")
         st.caption("Pick a month to see exactly what was consumed in it; *All months* lists every month side by side. "
                    "The **Monthly reports** page has the same month picker for every other dataset and one Excel workbook per month.")
-        fabric_month_block(_fm, key="fab")
+        fabric_month_block(_fm, key="fab", mkts=MK)
     ai_brief({"12-week fabric requirement": fabric_requirement(_mtime(), _fab_mtime(), FILT, 12).head(25), "top fabric codes": FB.by_fabric(dm).head(20),
-              "metres by fabric type": FB.by_fabric(dm, "fabric_type"), "coverage": cov},
+              "metres by fabric type": FB.by_fabric(dm, "fabric_type"), "coverage": cov}
+             | ({"metres by marketplace": known.groupby("marketplace")["metres"].sum().round(0).to_frame()} if len(MK) > 1 else {}),
              "Explain the fabric consumption picture: which fabrics matter most, what is rising or falling, what to buy for the next 12 weeks, "
              "and how much of the picture is missing because products are not in the sheet.", "fabric")
 
@@ -2017,14 +2211,15 @@ elif page == "Monthly reports":
     month = c[0].selectbox("Month", [ALL_MONTHS] + MONTHS[::-1], index=1 if MONTHS else 0, format_func=month_name, key="rep_month")
     c[1].caption("One month of everything the tool knows, in the shape the team works with: sales, fabric consumption, products and stock. "
                  "Sidebar place, category and sourcing filters apply; the sidebar period does not, the month picker replaces it.")
-    ds = monthly_datasets(_mtime(), _fab_mtime(), FILT_NF, month)
+    ds = monthly_datasets(_mtime(), _fab_mtime(), FILT_NF, month, tuple(MKTS))
     d_m = ds["Order lines"]
     k = st.columns(5)
     k[0].metric("Units", f"{d_m['quantity'].sum():,.0f}")
     k[1].metric("Revenue", inr(d_m["revenue"].sum()))
     k[2].metric("Orders", f"{d_m['order_id'].nunique():,}")
     k[3].metric("Products sold", f"{d_m['asin'].nunique():,}")
-    k[4].metric("Fabric consumed", f"{ds['Fabric by fabric code']['metres'].sum():,.0f} m" if "Fabric by fabric code" in ds else "n/a")
+    k[4].metric("Fabric consumed", f"{ds['Fabric by fabric code']['metres'].sum():,.0f} m" if "Fabric by fabric code" in ds else "n/a",
+                help="All marketplaces with a report loaded: " + ", ".join(MKTS) + ". The sales figures beside it are Amazon.in.")
 
     st.subheader("Download centre")
     c1, c2 = st.columns([3, 2])
@@ -2037,14 +2232,15 @@ elif page == "Monthly reports":
     b = st.columns([2, 3, 4])
     b[0].download_button(f"Download {pick} (CSV)", frame.to_csv(index=False).encode(), f"{pick.lower().replace(' ', '_')}_{month_tag(month)}.csv", "text/csv",
                          width="stretch", key="rep_dl_csv")
-    b[1].download_button(f"Download everything for {month_name(month)} (Excel)", monthly_workbook(_mtime(), _fab_mtime(), FILT_NF, month),
+    b[1].download_button(f"Download everything for {month_name(month)} (Excel)", monthly_workbook(_mtime(), _fab_mtime(), FILT_NF, month, tuple(MKTS)),
                          f"homemonde_{month_tag(month)}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch", key="rep_dl_xlsx",
                          help="One sheet per dataset" + (". Order lines are left out of the all-months workbook; download them per month." if month == ALL_MONTHS else ""))
     st.caption("Datasets: order lines (one row per order line), sales by SKU / SKU and state / category / state / district / region, daily units, "
-               "fabric consumption by fabric code and by SKU, the fabric code × month grid, products sold, and the latest outsourced stock snapshot.")
+               "fabric consumption by fabric code and by SKU, the fabric code × month grid, products sold, and the latest outsourced stock snapshot."
+               + (" Fabric tables cover every marketplace loaded (" + ", ".join(MKTS) + "); sales tables are Amazon.in." if len(MKTS) > 1 else ""))
 
     st.subheader("Fabric consumption")
-    fabric_month_block(month, key="rep")
+    fabric_month_block(month, key="rep", mkts=tuple(MKTS))
 
 elif page == "Data":
     st.title("Data")
@@ -2080,6 +2276,39 @@ elif page == "Data":
                     f"stock as of {pd.Timestamp(_o['snapshot'].iloc[0]):%d %b %Y}; {SRC.load_history()['snapshot'].nunique()} snapshot(s) kept)")
     else:
         st.markdown("**Outsource sheet:** not loaded. Put `Outsource*.xlsx` in the project folder and run `python -m demand.ingest`.")
+    _mi = MP.info()
+    _rep = {k: v for k, v in _mi.get("reports", {}).items() if "marketplace" in v}
+    if _rep:
+        _line = f"**Marketplace reports:** {len(_rep)} loaded, read into the fabric views next to Amazon.in (the sales pages stay Amazon.in)"
+        for _k, _v in sorted(_rep.items(), key=lambda kv: -kv[1]["units"]):
+            _line += f"  \n· {_v['marketplace']}: {_v['units']:,} demand units, {pd.Timestamp(_v['from']):%d %b} – {pd.Timestamp(_v['to']):%d %b %Y} (`{_k}`)"
+        for _k, _v in _mi.get("reports", {}).items():
+            if "skipped" in _v:
+                _line += f"  \n· `{_k}` skipped: {_v['skipped']}"
+        if _mi.get("master"):
+            _m = _mi["master"]
+            _line += (f"  \n· Master SKU sheet `{_m['name']}`: {_m['aliases']:,} seller SKUs over {_m['bases']:,} base SKUs"
+                      + (f"; {len(_m['conflicts'])} seller SKUs listed under two base SKUs (the first tab's kept; the join tries every alias, so no line is lost)"
+                         if _m.get("conflicts") else ""))
+        if _mi.get("items_without_sku"):
+            _n, _f = _mi["items_without_sku"]
+            _line += (f"  \n· {_n} items a report names without a SKU (Blinkit, a few website lines): {_f} given a base SKU so far in "
+                      f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}`; fill the `base_sku` column and run `python -m demand.ingest`")
+        st.markdown(_line)
+        if len(MP_ALL):
+            with st.expander("How the marketplace SKUs were matched to products"):
+                table(MP.mapping_summary(MP_ALL, fabric_map(_mtime(), _fab_mtime())).reset_index(), hide_index=True)
+                st.caption("Seller SKU → base SKU through the Master SKU sheet → the Amazon listing of the same product (so it shares that listing's fabric facts); "
+                           "products never sold on Amazon are read through the fabric sheet and the size rule on their own.")
+                _nm = MP_ALL[MP_ALL["is_demand"] & (MP_ALL["sku_match"] == "not in master")]
+                if len(_nm):
+                    _nm = _nm.groupby(["marketplace", "seller_sku"]).agg(units=("quantity", "sum"), product_name=("product_name", "first")).reset_index().sort_values("units", ascending=False)
+                    st.markdown(f"**Seller SKUs not in the Master sheet** ({len(_nm)} SKUs, {_nm['units'].sum():,} units): add them to the Master sheet to tie them to their base SKU.")
+                    table(_nm.head(200), hide_index=True, height=min(400, 36 * (len(_nm) + 1) + 4), column_config={"product_name": st.column_config.TextColumn(width="large")})
+                    st.download_button("Download the full list (CSV)", _nm.to_csv(index=False).encode(), "marketplace_skus_not_in_master.csv", "text/csv", key="dl_nm")
+    else:
+        st.markdown("**Marketplace reports:** none. Optional: put the Flipkart / Myntra / website / Ajio / Blinkit sales exports and the `Master SKU Sheet.xlsx` in "
+                    f"`{cfg.MARKETPLACE_DIR.relative_to(cfg.ROOT).as_posix()}` and run `python -m demand.ingest` to read fabric consumption per marketplace.")
     st.subheader("Reconciliation with the Excel workbook")
     rec = d_all.assign(month=d_all["date"].dt.strftime("%Y-%m")).groupby("month").apply(lambda g: pd.Series({
         "rows in sheet": len(g), "units in sheet (sum of quantity)": g["quantity"].sum(),
@@ -2097,19 +2326,44 @@ elif page == "Data":
 
     st.subheader("Add a new report")
     st.markdown("Download **Reports → Fulfilment / Orders → All Orders** from Seller Central for the new month and upload it here "
-                f"(or drop it into `{cfg.RAW_DIR}` and run `python -m demand.ingest`). Re-uploading a month is safe: newer order statuses replace older ones.")
-    up = st.file_uploader("All Orders report", type=["xlsx", "txt", "tsv", "csv"],
+                f"(or drop it into `{cfg.RAW_DIR}` and run `python -m demand.ingest`). Re-uploading a month is safe: newer order statuses replace older ones. "
+                "A Flipkart, Myntra, website, Ajio or Blinkit sales export (or a new Master SKU sheet) can be uploaded the same way: the tool recognises it by "
+                f"its columns and files it under `{cfg.MARKETPLACE_DIR.relative_to(cfg.ROOT).as_posix()}`.")
+    up = st.file_uploader("All Orders report, or a marketplace sales export", type=["xlsx", "txt", "tsv", "csv"],
                           help="On the hosted copy (Streamlit Community Cloud) an upload lasts only until the app next restarts. "
                                "To update it for good, ingest locally, commit `data/store/` and push.")
     if up and st.button("Ingest file"):
         from demand.ingest import ingest
         from demand.weather import update_weather
         cfg.RAW_DIR.mkdir(parents=True, exist_ok=True)
-        (cfg.RAW_DIR / up.name).write_bytes(up.getbuffer())
+        cfg.MARKETPLACE_DIR.mkdir(parents=True, exist_ok=True)
+        _dest = cfg.RAW_DIR / up.name
+        _dest.write_bytes(up.getbuffer())
+        _kind = MP.AMAZON
+        if up.name.lower().startswith("master sku"):
+            _kind = "Master"
+        elif _dest.suffix.lower() in (".xlsx", ".xlsm", ".xls", ".csv"):
+            try:
+                _kind = MP.detect(MP._read_any(_dest, nrows=5).columns) or MP.AMAZON
+            except Exception:
+                _kind = MP.AMAZON
         with st.status("Ingesting …", expanded=True):
-            ingest(log=st.write)
-            update_weather(log=st.write)
+            if _kind == MP.AMAZON:
+                ingest(log=st.write)
+                update_weather(log=st.write)
+            else:
+                _dest = _dest.replace(cfg.MARKETPLACE_DIR / up.name)
+                if _kind == "Website":
+                    # buyer names, phones and e-mail addresses are not kept in the copy the tool stores
+                    _w = pd.read_csv(_dest, dtype=str, keep_default_na=False) if _dest.suffix.lower() == ".csv" else pd.read_excel(_dest, dtype=str)
+                    _w.drop(columns=[c for c in _w.columns if str(c).strip().upper() in {x.upper() for x in MP.PII_COLS} or str(c).lower().startswith("payer_")]
+                            ).to_csv(_dest.with_suffix(".csv"), index=False)
+                    if _dest.suffix.lower() != ".csv":
+                        _dest.unlink()
+                st.write(f"{_kind} report filed under {cfg.MARKETPLACE_DIR.relative_to(cfg.ROOT).as_posix()}")
+                MP.update_marketplaces(log=st.write)
         st.cache_data.clear()
+        st.cache_resource.clear()
         st.rerun()
     st.subheader("Lines per month and source file")
     m = d_all.assign(month=d_all["date"].dt.strftime("%Y-%m")).pivot_table(index="month", columns="source_file", values="quantity", aggfunc="size", fill_value=0)

@@ -164,19 +164,12 @@ def _family(sku: str) -> str:
     return (m.group(1) if m else (sku or "").split("-")[0]).upper().replace("_", "-").replace(" ", "")
 
 
-def build_products(orders: pd.DataFrame) -> pd.DataFrame:
-    """One row per ASIN. SKUs are aliases (…%-OOS, -NEW, -S2) of the same listing, so ASIN is the product key."""
-    def mode(s):
-        return s.value_counts().index[0]
-
-    g = orders.groupby("asin")
-    p = pd.DataFrame({
-        "title": g["product_name"].agg(mode),
-        "main_sku": g["sku"].agg(mode),
-        "n_skus": g["sku"].nunique(),
-        "skus": g["sku"].agg(lambda s: ", ".join(sorted(s.unique()))),
-    })
-    p["title"] = p["title"].str.replace(r"^HOMEMONDE\s+", "", regex=True)
+def product_attributes(p: pd.DataFrame) -> pd.DataFrame:
+    """Category and the attributes the fabric rules need (curtain length, pack size, curtain type, custom size) for a frame
+    with `title` and `main_sku` columns. Shared by the Amazon product table and the marketplace-only products
+    (demand/marketplace.py), so one rule set reads every listing."""
+    p = p.copy()
+    p["title"] = p["title"].astype("string").str.replace(r"^HOMEMONDE\s+", "", regex=True)
     p["category"] = [categorise(t, k) for t, k in zip(p["title"], p["main_sku"])]
     p["family"] = p["main_sku"].map(_family)
 
@@ -200,6 +193,22 @@ def build_products(orders: pd.DataFrame) -> pd.DataFrame:
              .fillna(t.str.extract(r"\b(single|one)\s*(?:pcs|piece|panel|curtain)")[0].map({"single": "1", "one": "1"}))
              .fillna(p["main_sku"].str.upper().str.extract(r"-S(\d{1,2})(?:-|$)")[0]))
     p["pack_size"] = pd.to_numeric(pack, errors="coerce")
+    return p
+
+
+def build_products(orders: pd.DataFrame) -> pd.DataFrame:
+    """One row per ASIN. SKUs are aliases (…%-OOS, -NEW, -S2) of the same listing, so ASIN is the product key."""
+    def mode(s):
+        return s.value_counts().index[0]
+
+    g = orders.groupby("asin")
+    p = pd.DataFrame({
+        "title": g["product_name"].agg(mode),
+        "main_sku": g["sku"].agg(mode),
+        "n_skus": g["sku"].nunique(),
+        "skus": g["sku"].agg(lambda s: ", ".join(sorted(s.unique()))),
+    })
+    p = product_attributes(p)
 
     d = orders[orders["is_demand"]].groupby("asin")
     p["first_sale"] = d["date"].min()
@@ -275,3 +284,5 @@ if __name__ == "__main__":
     update_fabric()
     from .sourcing import update_outsource
     update_outsource()
+    from .marketplace import update_marketplaces
+    update_marketplaces()
