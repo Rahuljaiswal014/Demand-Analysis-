@@ -303,13 +303,14 @@ def read_report(path: Path, known_skus: set = frozenset()) -> tuple[str, pd.Data
     if name == AMAZON:
         raise ValueError(f"{path.name}: an Amazon All Orders report; put it in {cfg.RAW_DIR} for python -m demand.ingest")
     df = _website(raw, known_skus) if name == "Website" else READERS[name](raw)
-    df = df[df["date"].notna() & (df["gross_units"] > 0)].copy()
+    # a line with nothing on it is dropped; one that only carries a return of an earlier sale (Flipkart: gross 0, return 1) stays, so returns add up
+    df = df[df["date"].notna() & ((df["gross_units"] > 0) | (df["cancelled_units"] > 0) | (df["returned_units"] > 0))].copy()
     df["marketplace"], df["source_file"] = name, path.name
     df["date"] = df["date"].dt.normalize()
     df["month"] = df["date"].dt.strftime("%Y-%m")
     for c in ("quantity", "gross_units", "cancelled_units", "returned_units"):
         df[c] = df[c].astype("int64")
-    df["is_cancelled"] = df["quantity"].eq(0)
+    df["is_cancelled"] = df["quantity"].eq(0) & df["cancelled_units"].gt(0)
     df["is_demand"] = df["quantity"].gt(0)
     df["pin"] = df["pin"].astype("string").str.extract(r"(\d{6})")[0]
     df["city"] = df["city"].astype("string").str.upper().str.strip()
@@ -502,12 +503,16 @@ def extra_products(mp: pd.DataFrame) -> pd.DataFrame:
     g = m.groupby("asin")
     p = pd.DataFrame({
         "title": g["product_name"].agg(first_name),
+        # an item the report names without a SKU keeps a label that says so ('(no SKU) Blinkit 10236691'), so it still shows up in the
+        # SKUs-without-fabric-data list with its units instead of vanishing for want of a SKU
         "main_sku": g["base_sku"].agg(lambda s: s.dropna().iloc[0] if s.notna().any() else ""),
         "skus": g.apply(lambda x: ", ".join(sorted({a for al in x["aliases"] for a in al} | set(x["seller_sku"].dropna()))), include_groups=False),
         "mp_category": g["mp_category"].agg(first_name),
         "mp_size": g["mp_size"].agg(first_name),
     })
     p["n_skus"] = p["skus"].str.split(", ").map(len)
+    nosku = p["main_sku"].astype(str).str.strip() == ""
+    p.loc[nosku, "main_sku"] = p.index[nosku].str[len(KEY_PREFIX):]
     p["title"] = p["title"].where(p["title"].astype(str).str.strip() != "", p["main_sku"])
     # where neither the SKU prefix nor the name says what the product is, the marketplace's own category word is put in front of the
     # name ('Living Room Curtain BCR152-093-NBLU-8FT-S1'), so the category and then the curtain length / pack size rules can read it

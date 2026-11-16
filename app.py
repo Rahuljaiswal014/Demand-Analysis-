@@ -212,7 +212,8 @@ def hbar(s: pd.Series, color=None, height=None, fmt=",.0f", xtitle=None) -> go.F
 
 def heat(df: pd.DataFrame, diverging_mid=None, height=None, fmt=".0f") -> go.Figure:
     """Labelled matrix. Diverging scale (blue - neutral - red) around `diverging_mid`, else a single-hue ramp."""
-    top = float(np.nanmax(df.to_numpy(dtype=float)))
+    vals = df.to_numpy(dtype=float)
+    top = float(np.nanmax(vals)) if vals.size and not np.isnan(vals).all() else 0.0        # an empty matrix still draws, blank, instead of failing
     if diverging_mid:
         zmax = min(max(top, diverging_mid * 1.2), 2.2 * diverging_mid)
         kw = dict(colorscale=DIVERGING, zmid=diverging_mid, zmin=max(0, 2 * diverging_mid - zmax), zmax=zmax)
@@ -773,6 +774,14 @@ def monthly_datasets(mtime: float, fab_mtime: float, filt_nf: tuple, month: str,
             fmc = fmc.reset_index().rename(columns={"fabric_key": "fabric_code"})
             fmc["fabric_code"] = fmc["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
             out["Fabric by fabric code and marketplace"] = fmc.sort_values(by_m + ["total_metres"], ascending=[True] * len(by_m) + [False])
+            fms = dm.groupby(by_m + ["marketplace", "main_sku"]).agg(units=("quantity", "sum"), metres=("metres", "sum"), fabric_code=("fabric_key", "first"),
+                                                                     fabric_type=("fabric_type", "first"), fabric_family=("fabric_family", "first"), colour=("colour", "first"),
+                                                                     metres_per_unit=("metres_per_unit", "first"), category=("category", "first"),
+                                                                     fabric_source=("fabric_source", "first"), asin=("asin", "first")).reset_index()
+            fms["metres"] = fms["metres"].round(1)
+            fms["fabric_code"] = fms["fabric_code"].replace(FB.UNKNOWN, NO_CODE)
+            fms["title"] = fms["asin"].map(title).astype(str).str[:80]
+            out["Fabric by marketplace and SKU"] = fms.sort_values(by_m + ["marketplace", "metres"], ascending=[True] * len(by_m) + [True, False])
         piv = FB.with_metres(fabric_demand(D_M, MP_M, mkts), fabric_map(mtime, fab_mtime)).dropna(subset=["metres"]).pivot_table(
             index="fabric_key", columns="month", values="metres", aggfunc="sum", fill_value=0).round(0)
         piv.insert(0, "total_metres", piv.sum(axis=1))
@@ -1649,7 +1658,12 @@ elif page == "Fabric consumption":
     cov = FB.coverage(D_F, pf)
     known = dm.dropna(subset=["metres"])
     if known.empty:
-        st.info("The products in this view consume no in-house fabric (outsourced, or not on the fabric sheet). Change the filters to see fabric consumption.")
+        _nosku_u = int(dm.loc[dm["asin"].astype(str).str.startswith(MP.KEY_PREFIX + "(no SKU)"), "quantity"].sum()) if len(dm) else 0
+        if _nosku_u:
+            st.info(f"{_nosku_u:,} units in this selection were sold under item names the report gives no SKU for, so they have no metres yet. Fill in the base SKU "
+                    f"per item in `{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` and run `python -m demand.ingest`, or add another marketplace to the picker.")
+        else:
+            st.info("The products in this view consume no in-house fabric (outsourced, or not on the fabric sheet). Change the filters to see fabric consumption.")
         st.stop()
     total_m = known["metres"].sum()
     inferred_m = known.loc[known["fabric_source"] == "inferred: size rule", "metres"].sum()
@@ -1724,6 +1738,42 @@ elif page == "Fabric consumption":
                     "metres_per_unit": st.column_config.NumberColumn("m / unit", format="%.2f")})
                 st.caption("Covered % = units that reached a fabric figure (sheet, old list or size rule). The rest are outsourced, not on either fabric "
                            "list, or (Blinkit) sold under an item name the report gives no SKU for.")
+                st.download_button("Download this table (CSV)", bm.round(2).to_csv().encode(), "fabric_by_marketplace.csv", "text/csv", key="fab_mkt_dl_sum")
+            _tag = f"{start}_to_{end}"
+            st.subheader("Download each marketplace's fabric consumption by SKU")
+            _first = lambda s_: s_.dropna().iloc[0] if s_.notna().any() else None
+            sk = dm.groupby(["marketplace", "main_sku"]).agg(units=("quantity", "sum"), metres=("metres", "sum"), category=("category", "first"),
+                                                              fabric_code=("fabric_code", _first), fabric_type=("fabric_type", _first), fabric_family=("fabric_family", _first),
+                                                              colour=("colour", _first), size=("size", _first), metres_per_unit=("metres_per_unit", _first),
+                                                              fabric_source=("fabric_source", "first"), asin=("asin", "first")).reset_index()
+            sk["metres"] = sk["metres"].round(1)
+            sk["title"] = sk["asin"].map(TITLES).astype(str).str[:80]
+            sk = sk.sort_values(["marketplace", "metres", "units"], ascending=[True, False, False])
+            _b = st.columns(len(MK) + 1)
+            for _i, _m in enumerate(MK):
+                _part = sk[sk["marketplace"] == _m]
+                _b[_i].download_button(f"{_m} CSV", _part.to_csv(index=False).encode(), f"fabric_by_sku_{_m.lower()}_{_tag}.csv", "text/csv",
+                                       key=f"fab_mkt_dl_{_m}", width="stretch", help=f"{len(_part):,} SKUs, {_part['units'].sum():,.0f} units, {_part['metres'].sum():,.0f} m")
+            _b[-1].download_button("All, one file", sk.to_csv(index=False).encode(), f"fabric_by_sku_all_marketplaces_{_tag}.csv", "text/csv",
+                                   key="fab_mkt_dl_all", width="stretch", help="Every marketplace in one CSV, with a marketplace column")
+            st.caption("One row per SKU and marketplace for the sidebar period and filters: units sold, metres, fabric code, type, family, colour, size, metres per "
+                       "unit and where the figure came from (`fabric_source`). SKUs without a fabric figure are included with their units and `not in sheet`, so "
+                       "each file is the whole marketplace, not only the covered part.")
+            _nosku = dm[dm["asin"].str.startswith(MP.KEY_PREFIX + "(no SKU)", na=False)]
+            if len(_nosku):
+                _it = _nosku.groupby(["marketplace", "main_sku"]).agg(units=("quantity", "sum"), lines=("quantity", "size"), category=("category", "first"),
+                                                                       asin=("asin", "first")).reset_index()
+                _it["item"] = _it["asin"].map(TITLES).astype(str)
+                _it = _it.sort_values("units", ascending=False)
+                with st.expander(f"Items sold without a SKU on the report · {len(_it)} items, {_it['units'].sum():,} units, no metres yet", expanded=True):
+                    table(_it[["marketplace", "main_sku", "item", "category", "units", "lines"]], hide_index=True, height=min(500, 36 * (len(_it) + 1) + 4),
+                          column_config={"main_sku": st.column_config.TextColumn("Label"), "item": st.column_config.TextColumn("Item as named on the report", width="large"),
+                                         "units": st.column_config.NumberColumn("Units", format="localized")})
+                    st.download_button("Download these items (CSV)", _it[["marketplace", "main_sku", "item", "category", "units", "lines"]].to_csv(index=False).encode(),
+                                       "marketplace_items_without_sku.csv", "text/csv", key="fab_mkt_dl_nosku")
+                    st.markdown(f"These units are counted (they are in *Units sold* above) but carry **no metres**, because the report names the item and gives no SKU. "
+                                f"To make them accurate, write each item's base SKU in the `base_sku` column of `{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` "
+                                "(the item id and name are already there) and run `python -m demand.ingest`; the item then takes that SKU's fabric code and metres.")
             _kc = known[~known["fabric_code"].isin([FB.UNKNOWN, "(none)"])]
             st.subheader("Top 20 fabric codes by marketplace, metres")
             pc = _kc.pivot_table(index="fabric_code", columns="marketplace", values="metres", aggfunc="sum", fill_value=0)
@@ -1775,6 +1825,7 @@ elif page == "Fabric consumption":
                     "units_amazon_listing": st.column_config.NumberColumn("Units tied to an Amazon listing", format="localized"),
                     "units_with_fabric_figure": st.column_config.NumberColumn("Units with a fabric figure", format="localized"),
                     "fabric_figure_%": st.column_config.NumberColumn("Fabric figure %", format="%.1f")})
+                st.download_button("Download the matching summary (CSV)", ms_.to_csv(index=False).encode(), "marketplace_sku_matching.csv", "text/csv", key="fab_mkt_dl_match")
                 _items = MP.info().get("items_without_sku")
                 st.caption("A seller SKU is read through the Master SKU sheet to its base SKU, then tied to the Amazon listing that sells the same product "
                            "(seller SKU, base SKU or any alias of the base), so it gets the fabric facts that listing already has; products never sold on Amazon "
@@ -1885,14 +1936,21 @@ elif page == "Fabric consumption":
     with T["By place"]:
         lvl = st.segmented_control("Level", ["region", "state", "district"], default="region", format_func=pretty, key="fab_place")
         g = known[known[lvl].str.upper() != "UNKNOWN"].groupby(lvl)["metres"].sum().sort_values(ascending=False)
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.subheader(f"Metres by {lvl}")
-            show(hbar(g.head(15)))
-        with c2:
-            st.subheader(f"Fabric type mix by {lvl} (metres)")
-            piv = known[known[lvl].isin(g.head(10).index)].pivot_table(index=lvl, columns="fabric_type", values="metres", aggfunc="sum", fill_value=0)
-            show(heat((piv.div(piv.sum(axis=1), axis=0) * 100).round(0).loc[g.head(10).index.intersection(piv.index)], diverging_mid=None, height=330))
+        _no_place = [m for m in MK if m in ("Flipkart", "Ajio")] + (["Blinkit"] if "Blinkit" in MK and lvl == "district" else [])
+        if _no_place:
+            st.caption("No address in the report, so left out of this tab: " + ", ".join(_no_place)
+                       + ". Flipkart's and Ajio's exports carry no delivery address; Blinkit gives the city and state only.")
+        if g.empty:
+            st.info("No sales with a known place in this selection. Pick a marketplace whose report carries an address (Amazon, Myntra, the website, or Blinkit by state).")
+        else:
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.subheader(f"Metres by {lvl}")
+                show(hbar(g.head(15)))
+            with c2:
+                st.subheader(f"Fabric type mix by {lvl} (metres)")
+                piv = known[known[lvl].isin(g.head(10).index)].pivot_table(index=lvl, columns="fabric_type", values="metres", aggfunc="sum", fill_value=0)
+                show(heat((piv.div(piv.sum(axis=1), axis=0) * 100).round(0).loc[g.head(10).index.intersection(piv.index)], diverging_mid=None, height=330))
     with T["Coverage & sheet"]:
         st.subheader("Units with a fabric figure, by category")
         table(cov.reset_index())
