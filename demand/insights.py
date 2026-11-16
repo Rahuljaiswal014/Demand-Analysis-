@@ -222,11 +222,14 @@ def fabric(dm: pd.DataFrame, req: pd.DataFrame, cov: pd.DataFrame) -> str:
     if known.empty:
         return "- No fabric sheet loaded."
     total = known["metres"].sum()
-    inferred = known.loc[known["fabric_source"] == "inferred: size rule", "metres"].sum()
+    inferred = known.loc[known["fabric_source"].isin(["inferred: size rule", "item: size rule"]), "metres"].sum()
     pts = [f"Sales in this view consumed **{total:,.0f} m** of fabric ({cov.loc['ALL', 'known_%']:.0f}% of units have a fabric figure; "
            f"{inferred / total * 100:.0f}% of the metres are by size rule for products the sheet does not list)."]
     bt = known.groupby("fabric_type")["metres"].sum().sort_values(ascending=False)
-    pts.append("By type (of the metres with a known fabric): " + ", ".join(f"**{k}** {v / bt.sum() * 100:.0f}%" for k, v in bt.head(4).items()) + ".")
+    if len(bt) and bt.sum() > 0:
+        pts.append("By type (of the metres with a known fabric): " + ", ".join(f"**{k}** {v / bt.sum() * 100:.0f}%" for k, v in bt.head(4).items()) + ".")
+    else:
+        pts.append("No metres with a known fabric type in this view: every figure is a size-rule estimate.")
     codes = known[~known["fabric_code"].isin([UNKNOWN_KEY, "(none)"])].groupby("fabric_code")["metres"].sum().sort_values(ascending=False)
     if len(codes):
         top3 = codes.head(3)

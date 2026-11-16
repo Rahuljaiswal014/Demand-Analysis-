@@ -20,6 +20,17 @@ same fabric facts on every marketplace. Products that never sold on Amazon get a
 product row built from the report (title, SKU, category, curtain length, pack size), and then go through exactly the same
 fabric rules as Amazon listings (sheet by SKU, old list, size rule, outsourced, not in sheet).
 
+Blinkit works differently: it knows HomeMonde's products by its own item id and UPC. Its "Order data" export carries the
+HomeMonde SKU per item in a `Skus` column, and then Blinkit lines go the normal SKU route (Master sheet, Amazon listing, fabric
+sheet). Its plain "Sales Summary" export has no SKU column and only names the item ("Homemonde Blackout Door Curtain
+(Polyester, Beige)") without a size or pack; those lines are keyed by item id and read through an item table, data/reference/marketplace_items.csv, that the tool keeps up to date (one row per item id, with
+UPC and name) and pre-fills from the name: category; for curtains the length from the trade words Door = 7 ft, Window = 5 ft,
+Long Door = 9 ft (HomeMonde's own D / W / LD SKU codes say the same) and pieces = 2 (Blinkit's price per item matches the
+Amazon price of the pack of 2, not the single piece); for other items the sheet product only, because the name gives no size.
+Metres then come from the fabric sheet's size rule and are flagged `item: size rule` (fabric code unknown, like other
+size-rule estimates). Every cell of that table can be corrected by hand, and a `base_sku` filled in ties the item to that
+SKU's exact fabric facts instead.
+
 The website export carries buyer names, phones and e-mail addresses. They are never read (the reader drops those columns)
 and the copy kept in data/raw/marketplaces/ is written without them.
 """
@@ -47,7 +58,7 @@ SIGNATURES = {
 }
 AMAZON_SIGNATURE = ["amazon-order-id", "asin", "purchase-date"]
 PII_COLS = ["NAME", "PHONE", "EMAIL", "GST Number"]                        # website export: dropped on read, never stored
-COLS = ["marketplace", "order_id", "line_id", "date", "month", "seller_sku", "base_sku", "sku_match", "item_id", "product_name", "mp_category",
+COLS = ["marketplace", "order_id", "line_id", "date", "month", "seller_sku", "base_sku", "sku_match", "item_id", "upc", "product_name", "mp_category",
         "mp_size", "quantity", "gross_units", "cancelled_units", "returned_units", "revenue", "order_status", "is_cancelled", "is_demand",
         "state", "region", "city", "pin", "district", "district_source", "source_file"]
 MASTER_TABS = {"Amazon": "Seller SKU on Amazon", "Flipkart": "Seller SKU on Flipkart", "Myntra": "Seller SKU on Myntra", "Shopify": "Seller SKU on Shopify"}
@@ -181,7 +192,7 @@ def _flipkart(df: pd.DataFrame) -> pd.DataFrame:
         "order_id": pd.Series(pd.NA, index=df.index, dtype="string"),           # the export is aggregated: no order ids
         "line_id": sku.astype("string") + "|" + date.dt.strftime("%Y-%m-%d") + "|" + _col(df, "Location Id").astype("string").fillna("") + "|"
                    + _col(df, "Fulfillment Type").astype("string").fillna(""),
-        "date": date, "seller_sku": sku, "item_id": _col(df, "Product Id").astype("string"),
+        "date": date, "seller_sku": sku, "item_id": _col(df, "Product Id").astype("string"), "upc": pd.Series(pd.NA, index=df.index, dtype="string"),
         "product_name": pd.Series(pd.NA, index=df.index, dtype="string"),
         "mp_category": _col(df, "Vertical").astype("string").str.replace(r"(?<=[a-z])(?=[A-Z])", " ", regex=True),   # 'LivingRoomCurtain' -> 'Living Room Curtain'
         "mp_size": pd.Series(pd.NA, index=df.index, dtype="string"),
@@ -203,7 +214,7 @@ def _myntra(df: pd.DataFrame) -> pd.DataFrame:
         "line_id": _col(df, "order line id").astype("string").str.strip(),
         "date": pd.to_datetime(_col(df, "created on"), errors="coerce"),
         "seller_sku": _norm(_col(df, "seller sku code")).fillna(_norm(_col(df, "vendor article number"))),
-        "item_id": _col(df, "sku id").astype("string"), "product_name": _col(df, "style name").astype("string"),
+        "item_id": _col(df, "sku id").astype("string"), "upc": pd.Series(pd.NA, index=df.index, dtype="string"), "product_name": _col(df, "style name").astype("string"),
         "mp_category": _col(df, "article type").astype("string"), "mp_size": _col(df, "size").astype("string"),
         "quantity": np.where(cancelled, 0, 1), "gross_units": 1, "cancelled_units": cancelled.astype(int), "returned_units": returned.astype(int),
         "revenue": np.where(cancelled, 0.0, _num(_col(df, "final amount")).fillna(0)),
@@ -222,7 +233,7 @@ def _ajio(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame({
         "order_id": _col(df, "Cust Order No").astype("string"),
         "line_id": _col(df, "Cust Order No").astype("string") + "|" + _col(df, "FWD Seller Order NO").astype("string").fillna("") + "|" + _norm(_col(df, "Seller SKU")).astype("string").fillna(""),
-        "date": date, "seller_sku": _norm(_col(df, "Seller SKU")), "item_id": _col(df, "JioCode").astype("string"),
+        "date": date, "seller_sku": _norm(_col(df, "Seller SKU")), "item_id": _col(df, "JioCode").astype("string"), "upc": _col(df, "EAN").astype("string").str.strip(),
         "product_name": _col(df, "Description").astype("string"), "mp_category": _col(df, "Description").astype("string"),
         "mp_size": pd.Series(pd.NA, index=df.index, dtype="string"),
         "quantity": (qty - cancel).clip(lower=0), "gross_units": qty, "cancelled_units": cancel, "returned_units": 0,
@@ -242,8 +253,11 @@ def _blinkit(df: pd.DataFrame) -> pd.DataFrame:
         "order_id": _col(df, "Order Id").astype("string"),
         "line_id": _col(df, "Order Id").astype("string") + "|" + _col(df, "Item Id").astype("string"),
         "date": pd.to_datetime(_col(df, "Order Date"), errors="coerce"),
-        "seller_sku": pd.Series(pd.NA, index=df.index, dtype="string"),                 # the export names the item but gives no SKU
-        "item_id": _col(df, "Item Id").astype("string").str.strip(), "product_name": _col(df, "Product Name").astype("string"),
+        # the "Order data" export carries HomeMonde's SKU per item ('Skus'); the plain "Sales Summary" export does not, and those items
+        # go through the item table instead
+        "seller_sku": _norm(_col(df, "Skus")) if any(str(c).strip().lower() == "skus" for c in df.columns) else pd.Series(pd.NA, index=df.index, dtype="string"),
+        "item_id": _col(df, "Item Id").astype("string").str.strip(), "upc": _col(df, "UPC").astype("string").str.strip(),
+        "product_name": _col(df, "Product Name").astype("string").str.strip(),
         "mp_category": _col(df, "Mapping on consumer app (L0, L1, L2)").astype("string").str.split("->").str[-1].str.strip(),
         "mp_size": pd.Series(pd.NA, index=df.index, dtype="string"),
         "quantity": np.where(cancelled, 0, qty), "gross_units": qty, "cancelled_units": np.where(cancelled, qty, 0), "returned_units": 0,
@@ -280,6 +294,7 @@ def _website(df: pd.DataFrame, known_skus: set) -> pd.DataFrame:
         "line_id": _col(df, "Item ID").astype("string"),
         "date": pd.to_datetime(_col(df, "Order DATE"), errors="coerce"),
         "seller_sku": sku, "item_id": _col(df, "PRODUCT ID").astype("string").mask(lambda s: s.isin(["0", "", "nan"])), "product_name": name,   # 0 = no id
+        "upc": pd.Series(pd.NA, index=df.index, dtype="string"),
         "mp_category": _col(df, "Category").astype("string").str.replace("_", " ").mask(lambda s: s.str.lower().isin(["no data", "nan"])),
         "mp_size": pd.Series(pd.NA, index=df.index, dtype="string"),
         "quantity": np.where(cancelled, 0, qty), "gross_units": qty, "cancelled_units": np.where(cancelled, qty, 0),
@@ -325,36 +340,139 @@ def read_report(path: Path, known_skus: set = frozenset()) -> tuple[str, pd.Data
     return name, df
 
 
-# ------------------------------------------------------------------ items without a SKU on the report (Blinkit)
+# ------------------------------------------------------------------ items known by item id only (Blinkit)
+ITEM_COLS = ["marketplace", "item_id", "upc", "product_name", "category", "fabric_product", "size", "pieces", "basis", "base_sku"]
+# our category -> the fabric sheet's product name whose (size -> metres per piece) rule applies
+ITEM_PRODUCT = {"Curtain": "Curtains", "Cushion Cover": "Cushion Covers", "Pillow Cover": "Pillow Covers", "Bolster Cover": "Bloster Cover",
+                "Bedsheet": "Bedsheet", "Table Linen": "Table Cover", "Duvet Cover": "Duvet Covers", "Comforter/Quilt": "Dohar"}
+CURTAIN_WORDS = [("long door", 9), ("door", 7), ("window", 5)]        # the trade sizes; HomeMonde's own SKU codes LD / D / W carry the same lengths
+
+
+def describe_item(marketplace: str, name: str) -> dict:
+    """What a report's item name says about the product, in the terms the fabric sheet's size rule needs. Only what the name
+    (or, for Blinkit curtains, the price evidence) supports is filled; the rest is left blank for the business to complete."""
+    from .ingest import categorise
+    n = str(name or "")
+    low = n.lower()
+    cat = categorise(n)
+    out = {"category": cat, "fabric_product": ITEM_PRODUCT.get(cat), "size": None, "pieces": None, "basis": ""}
+    if cat == "Bedsheet" and "fitted" in low:
+        out["fabric_product"] = "Fitted Bedsheet"                       # its own size rule on the sheet
+    m = re.search(r"(\d{2,3})\s*[xX×]\s*(\d{2,3})\s*(?:inch|in\b|\")?", n)
+    if m:
+        out["size"] = f"{m.group(1)} x {m.group(2)} Inch"
+        out["basis"] = "size from the item name"
+    if cat == "Curtain":
+        ft = re.search(r"(?<![\d.])(\d{1,2})\s*(?:feet|ft|foot)\b", low)
+        if ft:
+            out["size"], out["basis"] = f"{int(ft.group(1))} Feet", "length from the item name"
+        else:
+            for word, feet in CURTAIN_WORDS:
+                if word in low:
+                    out["size"], out["basis"] = f"{feet} Feet", f"length from the word '{word}' in the name ({feet} ft, as HomeMonde's own {'LD' if feet == 9 else 'D' if feet == 7 else 'W'} codes)"
+                    break
+    pk = re.search(r"(?:set|pack|pair)\s*of\s*(\d{1,2})|\b(\d{1,2})\s*(?:pcs|pieces?|panels?)\b", low)
+    if pk:
+        out["pieces"] = int(pk.group(1) or pk.group(2))
+        out["basis"] = (out["basis"] + "; " if out["basis"] else "") + "pieces from the item name"
+    elif "single" in low or "1 pc" in low:
+        out["pieces"] = 1
+        out["basis"] = (out["basis"] + "; " if out["basis"] else "") + "single piece per the name"
+    elif marketplace == "Blinkit" and cat == "Curtain" and out["size"]:
+        out["pieces"] = 2
+        out["basis"] += "; pieces = 2: Blinkit's price per item matches the Amazon price of the pack of 2 for this length (the single piece sells at about half)"
+    elif out["fabric_product"] in ("Bedsheet", "Fitted Bedsheet", "Table Cover", "Dohar", "Duvet Covers"):
+        out["pieces"] = 1                                                 # one piece per unit, as on the fabric sheet's own rows for these products
+        out["basis"] = (out["basis"] + "; " if out["basis"] else "") + "one piece per unit (as on the fabric sheet)"
+    if out["fabric_product"] and not out["size"]:
+        out["basis"] = (out["basis"] + "; " if out["basis"] else "") + "size not on the report: fill in `size` (and `pieces`) to get metres"
+    if not out["fabric_product"]:
+        out["basis"] = (out["basis"] + "; " if out["basis"] else "") + "no size rule on the fabric sheet for this product: fill in `base_sku`"
+    return out
+
+
 def _items_file() -> pd.DataFrame:
-    cols = ["marketplace", "item_id", "product_name", "base_sku"]
     if cfg.MARKETPLACE_ITEMS_CSV.exists():
-        f = pd.read_csv(cfg.MARKETPLACE_ITEMS_CSV, dtype=str)
-        for c in cols:
+        f = pd.read_csv(cfg.MARKETPLACE_ITEMS_CSV, dtype=str, keep_default_na=False)
+        for c in ITEM_COLS:
             if c not in f.columns:
-                f[c] = pd.NA
-        return f[cols]
-    return pd.DataFrame(columns=cols)
+                f[c] = ""
+        f = f[ITEM_COLS].astype(str)
+        return f.replace({"nan": "", "<NA>": "", "None": ""})
+    return pd.DataFrame(columns=ITEM_COLS, dtype=str)
 
 
-def _update_items_file(mp: pd.DataFrame) -> pd.DataFrame:
-    """Keep data/reference/marketplace_items.csv listing every item a report names without a SKU, so the base SKU can be
-    filled in by hand. Rows already there (filled or not) are kept as they are; new items are appended with a blank base SKU."""
+def _item_key(marketplace: pd.Series, item_id: pd.Series, name: pd.Series) -> pd.Series:
+    """One key per item: the item id where the report gives one, else the item name."""
+    iid = item_id.astype("string").str.strip().replace("", pd.NA)
+    return marketplace.astype(str) + "|" + iid.fillna(name.astype("string").str.strip()).astype(str)
+
+
+def update_items_file(mp: pd.DataFrame) -> pd.DataFrame:
+    """Keep data/reference/marketplace_items.csv: one row per item a report names without a SKU (Blinkit's whole catalogue, a few
+    website lines), with the item id, UPC and name as the report gives them and the tool's reading of the name (category, sheet
+    product, size, pieces, basis). Rows already there are kept exactly as they are, so hand corrections survive; new items are
+    appended. A `base_sku` filled in by hand ties the item to that SKU instead of the size rule."""
     f = _items_file()
-    nosku = mp[mp["seller_sku"].isna() & (mp["item_id"].notna() | mp["product_name"].notna())]
-    seen = nosku.assign(item_id=nosku["item_id"].astype("string").fillna("")).groupby(["marketplace", "item_id", "product_name"], dropna=False).agg(
-        units=("gross_units", "sum")).reset_index()
-    seen = seen.sort_values("units", ascending=False).drop_duplicates(["marketplace", "item_id", "product_name"])
-    have = set(zip(f["marketplace"], f["item_id"].astype("string").fillna(""), f["product_name"].astype(str)))
-    have_id = set(zip(f.loc[f["item_id"].notna(), "marketplace"], f.loc[f["item_id"].notna(), "item_id"].astype(str)))
-    is_new = [(mk, iid, nm) not in have and (iid == "" or (mk, iid) not in have_id) for mk, iid, nm in zip(seen["marketplace"], seen["item_id"], seen["product_name"].astype(str))]
-    new = seen[is_new].drop(columns="units").assign(base_sku=pd.NA)
-    new["item_id"] = new["item_id"].replace("", pd.NA)
+    nosku = mp[mp["seller_sku"].isna() & (mp["item_id"].notna() | mp["product_name"].notna())].copy()
+    if nosku.empty and cfg.MARKETPLACE_ITEMS_CSV.exists():
+        return f
+    nosku["_key"] = _item_key(nosku["marketplace"], nosku["item_id"], nosku["product_name"])
+    first = lambda s_: s_.dropna().astype(str).str.strip().replace("", pd.NA).dropna().mode().iat[0] if s_.notna().any() and (s_.dropna().astype(str).str.strip() != "").any() else ""
+    seen = nosku.groupby("_key").agg(marketplace=("marketplace", "first"), item_id=("item_id", first), upc=("upc", first), product_name=("product_name", first),
+                                     units=("gross_units", "sum")).reset_index(drop=True)
+    have = set(_item_key(f["marketplace"], f["item_id"], f["product_name"]))
+    new = seen[~_item_key(seen["marketplace"], seen["item_id"], seen["product_name"]).isin(have)].sort_values("units", ascending=False)
     if len(new) or not cfg.MARKETPLACE_ITEMS_CSV.exists():
-        f = pd.concat([f, new[f.columns]], ignore_index=True)
+        desc = pd.DataFrame([describe_item(m, n) for m, n in zip(new["marketplace"], new["product_name"])], index=new.index)
+        new = pd.concat([new.drop(columns="units"), desc], axis=1).assign(base_sku="")
+        new["pieces"] = new["pieces"].map(lambda v: "" if v is None or pd.isna(v) else str(int(v)))
+        f = pd.concat([f, new[ITEM_COLS].fillna("").astype(str)], ignore_index=True)
         cfg.MARKETPLACE_ITEMS_CSV.parent.mkdir(parents=True, exist_ok=True)
         f.to_csv(cfg.MARKETPLACE_ITEMS_CSV, index=False)
     return f
+
+
+def items_table() -> pd.DataFrame:
+    """The item table as it stands, with the product key each row maps to (`asin`) and whether it will give metres."""
+    f = _items_file()
+    if f.empty:
+        return f.assign(asin=pd.Series(dtype=str), status=pd.Series(dtype=str))
+    f["asin"] = NOSKU_KEY + _item_key(f["marketplace"], f["item_id"], f["product_name"])
+    has_sku = f["base_sku"].str.strip() != ""
+    complete = (f["fabric_product"].str.strip() != "") & (f["size"].str.strip() != "") & (f["pieces"].str.strip() != "")
+    f["status"] = np.select([has_sku, complete], ["tied to base SKU", "metres by size rule"], "needs size / pieces or a base SKU")
+    return f
+
+
+def apply_item_rules(pf: pd.DataFrame, fab: pd.DataFrame) -> pd.DataFrame:
+    """Fill the fabric facts of item-keyed products (Blinkit) from the item table and the fabric sheet's size rule: metres per
+    piece for (sheet product, size) x pieces. Rows the table does not complete keep `not in sheet`. Items tied to a base SKU
+    never reach here (they carry that SKU's own facts through the SKU route)."""
+    from . import fabric as FB
+    items = items_table()
+    if pf.empty or items.empty:
+        return pf
+    rules = FB.size_rules(fab)
+    use = items[items["status"] == "metres by size rule"].drop_duplicates("asin").set_index("asin")
+    out = pf.copy()
+    hit = out["asin"].isin(use.index) & (out["fabric_source"] == "not in sheet")
+    for i in out.index[hit]:
+        it = use.loc[out.at[i, "asin"]]
+        size = FB._norm_size(it["size"]) if "Feet" not in str(it["size"]) else re.sub(r"\s+", " ", str(it["size"]).strip())
+        try:
+            pieces = float(str(it["pieces"]).strip())
+        except ValueError:
+            continue
+        if (it["fabric_product"], size) not in rules:
+            continue
+        mpp = rules[(it["fabric_product"], size)]
+        out.at[i, "fabric_product"], out.at[i, "size"], out.at[i, "pieces"] = it["fabric_product"], size, pieces
+        out.at[i, "metres_per_piece"], out.at[i, "metres_per_unit"] = mpp, mpp * pieces
+        out.at[i, "fabric_code"], out.at[i, "fabric_source"] = FB.UNKNOWN, FB.ITEM_RULE
+        if it["category"]:
+            out.at[i, "category"] = it["category"]
+    return out
 
 
 # ------------------------------------------------------------------ build the store
@@ -423,20 +541,18 @@ def update_marketplaces(log=print) -> pd.DataFrame | None:
     mp["base_sku"] = mp["seller_sku"].map(alias)
     mp["sku_match"] = np.select([mp["seller_sku"].isna(), mp["base_sku"].notna()], ["no SKU on report", "master sheet"], "not in master")
     mp["base_sku"] = mp["base_sku"].fillna(mp["seller_sku"])
-    items = _update_items_file(mp)
-    filled = items[items["base_sku"].notna() & (items["base_sku"].astype(str).str.strip() != "")]
+    items = update_items_file(mp)
+    filled = items[items["base_sku"].str.strip() != ""]
     if len(filled):
-        by_id = dict(zip(zip(filled["marketplace"], filled["item_id"].astype("string")), _norm(filled["base_sku"])))
-        by_name = dict(zip(zip(filled["marketplace"], filled["product_name"].astype(str)), _norm(filled["base_sku"])))
-        key_id = pd.Series(list(zip(mp["marketplace"], mp["item_id"].astype("string"))), index=mp.index)
-        key_nm = pd.Series(list(zip(mp["marketplace"], mp["product_name"].astype(str))), index=mp.index)
-        ref = key_id.map(by_id).fillna(key_nm.map(by_name))
+        by_key = dict(zip(_item_key(filled["marketplace"], filled["item_id"], filled["product_name"]), _norm(filled["base_sku"])))
+        ref = _item_key(mp["marketplace"], mp["item_id"], mp["product_name"]).map(by_key)
         hit = mp["seller_sku"].isna() & ref.notna()
         mp.loc[hit, "base_sku"] = ref[hit].map(lambda b: alias.get(b, b))
         mp.loc[hit, "sku_match"] = "reference file"
     mp = mp[COLS].sort_values(["date", "marketplace"]).reset_index(drop=True)
     mp.to_parquet(cfg.MARKETPLACE_PARQUET, index=False)
     manifest["items_without_sku"] = int(len(items)), int(len(filled))
+    manifest["items_by_rule"] = int((items_table()["status"] == "metres by size rule").sum())
     manifest["files"]["__items__"] = ({"size": cfg.MARKETPLACE_ITEMS_CSV.stat().st_size, "mtime": int(cfg.MARKETPLACE_ITEMS_CSV.stat().st_mtime)}
                                       if cfg.MARKETPLACE_ITEMS_CSV.exists() else None)
     cfg.MARKETPLACE_MANIFEST.write_text(json.dumps(manifest, indent=2))
@@ -462,6 +578,7 @@ def info() -> dict:
 
 # ------------------------------------------------------------------ join to the products the Amazon pipeline knows
 KEY_PREFIX = "MP:"
+NOSKU_KEY = KEY_PREFIX + "item "                        # products known by item id only: 'MP:item Blinkit|10236691'
 
 
 def resolve(mp: pd.DataFrame, products: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
@@ -485,7 +602,7 @@ def resolve(mp: pd.DataFrame, products: pd.DataFrame, master: pd.DataFrame) -> p
         extra = base[todo].map(lambda b: next((sku_asin[a] for a in by_base.get(b, []) if a in sku_asin.index), pd.NA))
         found = found.astype("object")
         found[todo] = extra
-    out["asin"] = found.where(found.notna(), (KEY_PREFIX + base).where(base.notna(), KEY_PREFIX + "(no SKU) " + out["marketplace"] + " " + out["item_id"].astype(str)))
+    out["asin"] = found.where(found.notna(), (KEY_PREFIX + base).where(base.notna(), NOSKU_KEY + _item_key(out["marketplace"], out["item_id"], out["product_name"])))
     out["key_source"] = np.where(found.notna(), "Amazon listing", "marketplace only")
     out["aliases"] = base.map(lambda b: by_base.get(b, [b]) if pd.notna(b) else [])
     return out
@@ -512,7 +629,7 @@ def extra_products(mp: pd.DataFrame) -> pd.DataFrame:
     })
     p["n_skus"] = p["skus"].str.split(", ").map(len)
     nosku = p["main_sku"].astype(str).str.strip() == ""
-    p.loc[nosku, "main_sku"] = p.index[nosku].str[len(KEY_PREFIX):]
+    p.loc[nosku, "main_sku"] = p.index[nosku].str[len(NOSKU_KEY):].str.replace("|", " item ", regex=False)      # 'Blinkit item 10236691'
     p["title"] = p["title"].where(p["title"].astype(str).str.strip() != "", p["main_sku"])
     # where neither the SKU prefix nor the name says what the product is, the marketplace's own category word is put in front of the
     # name ('Living Room Curtain BCR152-093-NBLU-8FT-S1'), so the category and then the curtain length / pack size rules can read it

@@ -38,6 +38,8 @@ def week_start(dates: pd.Series) -> pd.Series:
 
 def complete_weeks(d: pd.DataFrame) -> pd.DatetimeIndex:
     """Monday starts of weeks fully covered by the data (partial edge weeks distort trends)."""
+    if d.empty:
+        return pd.DatetimeIndex([])
     lo, hi = d["date"].min(), d["date"].max()
     first = lo if lo.dayofweek == 0 else lo + pd.Timedelta(days=7 - lo.dayofweek)
     last = hi - pd.Timedelta(days=hi.dayofweek + 7) if hi.dayofweek != 6 else hi - pd.Timedelta(days=6)

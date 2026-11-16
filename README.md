@@ -194,9 +194,15 @@ dropped there is pointed to `data/raw/`. Rules, the same for every marketplace:
   the same metres whichever marketplace sold it. Products never sold on Amazon get a key of their own (`MP:<base SKU>`), a product
   row built from the report (name, SKU, the marketplace's category word, curtain length and pack size from the name and SKU) and go
   through the same fabric rules (sheet by SKU, old list, size rule, outsourced, not in sheet).
-- **Blinkit** names its items ("Homemonde Blackout Door Curtain (Polyester, Beige)") but gives no SKU, so its lines count as units
-  without metres until the business fills in the base SKU per item in `data/reference/marketplace_items.csv` (the tool adds every
-  new item there with a blank `base_sku`; fill it and re-ingest). The same file catches the few website lines without a SKU.
+- **Blinkit** knows HomeMonde's products by its own item id and UPC. Its **Order data** export (`October BLinkit Order data 2.xlsx`
+  style, with a `Skus` column) carries the HomeMonde SKU per item, and those lines go the normal SKU route like any other
+  marketplace. Its plain **Sales Summary** export has no SKU column and only names the item ("Homemonde Blackout Door Curtain
+  (Polyester, Beige)") with no size or pack; such lines are keyed by item id and read through an item table,
+  `data/reference/marketplace_items.csv` (one row per item: id, UPC, name, category, sheet product, size, pieces, basis, optional
+  base SKU), which the tool keeps up to date and pre-fills from the name where the name supports it; metres then follow the fabric
+  sheet's size rule and are flagged `item: size rule` (fabric code unknown). Prefer the Order data export: October's real SKUs showed
+  that item names alone can mislead (two "Door" curtains are 9 ft, a "Window" one 6 ft). The same table catches the few website
+  lines without a SKU.
 - **Privacy**: the website export carries buyer names, phones and e-mails. The reader never loads those columns and the copy kept in
   `data/raw/marketplaces/` is written without them; the drop folder `sales reports*/` is ignored by git.
 

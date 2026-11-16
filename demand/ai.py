@@ -89,7 +89,8 @@ product_fabric — one row per ASIN with its fabric: fabric_code (e.g. 'FAB-0030
   fabric_family (Solid/Dimout/Printed/Blackout/Stripe/Digital Blackout), fabric_product, product_type, colour, size,
   metres_per_piece, pieces, metres_per_unit (metres of fabric one sold unit consumes), fabric_source ('sheet: ASIN' /
   'sheet: SKU' / 'old list: code, size rule' (fabric code from the old fabric SKU list, metres by the sheet's size rule) /
-  'inferred: size rule' / 'outsourced: no fabric' (bought in finished, consumes no in-house fabric) /
+  'inferred: size rule' / 'item: size rule' (a Blinkit item: size and pieces from the item table, metres by the size rule, code unknown) /
+  'outsourced: no fabric' (bought in finished, consumes no in-house fabric) /
   'old list: code, no size' (code known, custom size, no metres) / 'not in sheet').
   Fabric consumed = SUM(sales.quantity * metres_per_unit), joined on asin.
   'sheet:' and 'old list:' rows carry a real fabric code; always say when a figure includes size-rule (estimated) metres.
@@ -106,7 +107,9 @@ marketplace_sales — order lines from the OTHER marketplaces (marketplace: 'Fli
   gross_units, cancelled_units, returned_units, revenue, order_status, is_demand, state, region, district, city, category, fabric_code,
   fabric_source, metres_per_unit, metres (quantity x metres_per_unit; NULL where the fabric is unknown). Filter is_demand = true for
   demand. Fabric consumed per marketplace = SUM(metres) GROUP BY marketplace; add the Amazon figure from `sales` x product_fabric.
-  Blinkit lines carry no SKU (sku_match 'no SKU on report') until the business maps its item names, so they have no metres.
+  Blinkit knows products by item id and UPC; its Order data export also carries the HomeMonde SKU (column `upc` holds the UPC), so
+  Blinkit lines join like the others. A Blinkit export without SKUs would be keyed 'MP:item Blinkit|<item id>' and get metres through
+  the item table (fabric_source 'item: size rule').
 
 sku_master — the Master SKU sheet: alias (a seller SKU on some marketplace), base_sku, channel ('Amazon' / 'Flipkart' / 'Myntra' /
   'Shopify' = website / 'base' / 'old base').
@@ -280,6 +283,7 @@ def build_database(path: str = ":memory:") -> duckdb.DuckDBPyConnection:
     if len(extra):
         extra_sourcing = SRC.product_sourcing(extra, fabric_sheet, outsource_sheet)
         product_fabric = pd.concat([product_fabric, FB.product_fabric(extra, fabric_sheet, set(extra_sourcing.query("sourcing == 'Outsourced'")["asin"]))], ignore_index=True)
+        product_fabric = MP.apply_item_rules(product_fabric, fabric_sheet)
         product_sourcing = pd.concat([product_sourcing, extra_sourcing], ignore_index=True)
     marketplace_sales = (mp.drop(columns=["aliases"]).merge(product_fabric[["asin", "fabric_code", "fabric_source", "metres_per_unit"]], on="asin", how="left")
                          if len(mp) else pd.DataFrame({"marketplace": []}))

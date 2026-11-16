@@ -30,8 +30,10 @@ from . import forecast as F
 BOUGHT_IN = "outsourced: no fabric"
 OLD_RULE, OLD_NOSIZE = "old list: code, size rule", "old list: code, no size"
 NOT_GIVEN = "(not given: old list)"                   # fabric type / family the old list's product name does not state
-SOURCE_ORDER = ["sheet: ASIN", "sheet: SKU", OLD_RULE, "inferred: size rule", BOUGHT_IN, OLD_NOSIZE, "not in sheet"]
-WITH_METRES = ["sheet: ASIN", "sheet: SKU", OLD_RULE, "inferred: size rule"]                      # sources that carry metres
+ITEM_RULE = "item: size rule"                         # a marketplace item known by item id only (Blinkit): size and pieces from the item table, metres by the size rule
+INFERRED = ["inferred: size rule", ITEM_RULE]          # metres estimated by the size rule; the fabric code is unknown
+SOURCE_ORDER = ["sheet: ASIN", "sheet: SKU", OLD_RULE, "inferred: size rule", ITEM_RULE, BOUGHT_IN, OLD_NOSIZE, "not in sheet"]
+WITH_METRES = ["sheet: ASIN", "sheet: SKU", OLD_RULE, "inferred: size rule", ITEM_RULE]           # sources that carry metres
 UNKNOWN = "(unknown: new ranges, by size rule)"
 COLS = {"SKU": "sku", "Fabric Type": "fabric_type", "Family": "fabric_family", "Product": "fabric_product", "Product Type": "product_type",
         "Colour": "colour", "Nested Category": "nested_category", "Fabric Code": "fabric_code", "Asins": "asin", "Size": "size",
@@ -226,6 +228,11 @@ def old_list_info() -> dict:
 
 
 # ------------------------------------------------------------------ join to products
+def size_rules(fab: pd.DataFrame) -> dict:
+    """Public name of the size rule table: (sheet product, size) -> metres per piece."""
+    return _size_rules(fab)
+
+
 def _size_rules(fab: pd.DataFrame) -> dict:
     """(sheet product, size label) -> metres per piece, only where the sheet is unanimous. Sheet rows only: old-list rows
     carry no metres. Size labels are normalised so '72 x48 Inch' and a SKU's '72X48' meet."""
@@ -328,7 +335,7 @@ def coverage(d: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
     return t.astype({c: int for c in t.columns if c != "known_%"})
 
 
-MISSING_LABEL = {"inferred: size rule": "Estimated (no fabric code)", OLD_RULE: "Estimated metres (code from old list)",
+MISSING_LABEL = {"inferred: size rule": "Estimated (no fabric code)", ITEM_RULE: "Estimated (item size rule, no fabric code)", OLD_RULE: "Estimated metres (code from old list)",
                  OLD_NOSIZE: "No size (code from old list)", "not in sheet": "No data"}
 PRIORITY = ["1 High", "2 Medium", "3 Low", "4 Not selling"]
 
@@ -367,7 +374,7 @@ def with_metres(d: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
     cols = ["asin", "fabric_code", "fabric_type", "fabric_family", "fabric_product", "product_type", "colour", "size", "metres_per_unit", "fabric_source"]
     x = d.drop(columns=[c for c in _LINE_DETAIL if c in d.columns]).merge(pf[cols], on="asin", how="left")
     x["metres"] = x["quantity"] * x["metres_per_unit"]
-    x["fabric_key"] = x["fabric_code"].where(x["fabric_source"] != "inferred: size rule", UNKNOWN)
+    x["fabric_key"] = x["fabric_code"].where(~x["fabric_source"].isin(INFERRED), UNKNOWN)
     return x
 
 
@@ -410,7 +417,7 @@ def requirement(d: pd.DataFrame, pf: pd.DataFrame, horizon: int = 12) -> pd.Data
     fc = fc.join(m[["fabric_code", "fabric_type", "fabric_family", "metres_per_unit", "fabric_source"]], on="group")
     fc = fc[fc["metres_per_unit"].notna()].copy()
     fc["baseline_m"], fc["festive_m"] = fc["baseline"] * fc["metres_per_unit"], fc["festive_scenario"] * fc["metres_per_unit"]
-    fc["key"] = fc["fabric_code"].where(fc["fabric_source"] != "inferred: size rule", UNKNOWN)
+    fc["key"] = fc["fabric_code"].where(~fc["fabric_source"].isin(INFERRED), UNKNOWN)
     g = fc.groupby("key").agg(fabric_type=("fabric_type", "first"), fabric_family=("fabric_family", "first"), products=("group", "nunique"),
                               baseline_m=("baseline_m", "sum"), festive_m=("festive_m", "sum"))
     recent = with_metres(d[d["date"] > d["date"].max() - pd.Timedelta(weeks=horizon)], pf)
@@ -427,7 +434,7 @@ def monthly_requirement(pred: pd.DataFrame, d: pd.DataFrame, pf: pd.DataFrame, m
     mix = recent[recent["asin"].isin(alive)].groupby(["category", "asin"])["quantity"].sum()
     mix = (mix / mix.groupby("category").transform("sum")).rename("mix").reset_index()
     mix = mix.join(pf.set_index("asin")[["fabric_code", "fabric_type", "metres_per_unit", "fabric_source"]], on="asin").dropna(subset=["metres_per_unit"])
-    mix["key"] = mix["fabric_code"].where(mix["fabric_source"] != "inferred: size rule", UNKNOWN)
+    mix["key"] = mix["fabric_code"].where(~mix["fabric_source"].isin(INFERRED), UNKNOWN)
     p = pred.groupby(["category", "month"])["units"].sum().reset_index()
     p = p[p["month"].isin(sorted(p["month"].unique())[:months])]
     x = p.merge(mix, on="category")

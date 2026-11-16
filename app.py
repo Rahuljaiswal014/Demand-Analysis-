@@ -145,8 +145,12 @@ def style(fig: go.Figure, height=340, legend=True, ytitle=None, xtitle=None) -> 
     return fig
 
 
+_FIGS = [0]                                              # charts drawn so far in this run: a deterministic key for each, so two identical (e.g. empty) charts never collide
+
+
 def show(fig):
-    st.plotly_chart(fig, theme=None, config={"displayModeBar": False})
+    _FIGS[0] += 1
+    st.plotly_chart(fig, theme=None, config={"displayModeBar": False}, key=f"fig_{_FIGS[0]}")
 
 
 class card:
@@ -353,7 +357,8 @@ def fabric_map(mtime: float, fab_mtime: float) -> pd.DataFrame:
     if len(extra):
         pe = SRC.product_sourcing(extra, FB.load_fabric(), sourcing_tables(mtime)[0])
         outsourced |= set(pe.loc[pe["sourcing"] == SRC.OUTSOURCED, "asin"])
-    return FB.product_fabric(all_products(mtime), FB.load_fabric(), outsourced)
+    pf = FB.product_fabric(all_products(mtime), FB.load_fabric(), outsourced)
+    return MP.apply_item_rules(pf, FB.load_fabric())             # Blinkit items (item id, no SKU): size and pieces from the item table
 
 
 @st.cache_data(show_spinner="Listing SKUs without fabric data …")
@@ -1658,15 +1663,16 @@ elif page == "Fabric consumption":
     cov = FB.coverage(D_F, pf)
     known = dm.dropna(subset=["metres"])
     if known.empty:
-        _nosku_u = int(dm.loc[dm["asin"].astype(str).str.startswith(MP.KEY_PREFIX + "(no SKU)"), "quantity"].sum()) if len(dm) else 0
+        _nosku_u = int(dm.loc[dm["asin"].astype(str).str.startswith(MP.NOSKU_KEY), "quantity"].sum()) if len(dm) else 0
         if _nosku_u:
-            st.info(f"{_nosku_u:,} units in this selection were sold under item names the report gives no SKU for, so they have no metres yet. Fill in the base SKU "
-                    f"per item in `{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` and run `python -m demand.ingest`, or add another marketplace to the picker.")
+            st.info(f"{_nosku_u:,} units in this selection are items the report knows by item id only, and none of them has a size and pieces (or a base SKU) in "
+                    f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` yet, so there are no metres. Fill that table in and run `python -m demand.ingest`, "
+                    "or add another marketplace to the picker.")
         else:
             st.info("The products in this view consume no in-house fabric (outsourced, or not on the fabric sheet). Change the filters to see fabric consumption.")
         st.stop()
     total_m = known["metres"].sum()
-    inferred_m = known.loc[known["fabric_source"] == "inferred: size rule", "metres"].sum()
+    inferred_m = known.loc[known["fabric_source"].isin(FB.INFERRED), "metres"].sum()
     old_m = known.loc[known["fabric_source"] == FB.OLD_RULE, "metres"].sum()
     k = st.columns(5)
     k[0].metric("Fabric consumed", f"{total_m:,.0f} m", help="On " + ", ".join(MK) + ("" if len(MK) == 1 else
@@ -1692,28 +1698,33 @@ elif page == "Fabric consumption":
     T = dict(zip(FAB_TABS, tabs))
     with T["By fabric code"]:
         bf = FB.by_fabric(dm)
-        c1, c2 = st.columns([2, 3])
-        with c1:
-            st.subheader("Top 15 fabric codes, metres")
-            show(hbar(bf["metres"].head(15)))
-        with c2:
-            st.subheader("All fabric codes")
-            table(bf.reset_index(), hide_index=True, height=520, column_config={
-                "metres": st.column_config.NumberColumn("metres", format="localized"), "growth_4w_%": st.column_config.NumberColumn("4 wk growth %", format="%+.1f")})
-        st.subheader("Look up a fabric code")
-        code = st.selectbox("Fabric code", bf.index.tolist(), key="fab_code")
-        x = known[known["fabric_code"] == code]
-        c1, c2 = st.columns([3, 2])
-        with c1:
-            w = A.weekly_matrix(x.assign(quantity=x["metres"], k="m"), "k").T.reindex(A.complete_weeks(D), fill_value=0)
-            show(lines(w.rename(columns={"m": "metres / week"}), {"metres / week": P["series"][0]}, 260, ytitle="Metres / week"))
-        with c2:
-            prods = x.groupby(["main_sku"]).agg(units=("quantity", "sum"), metres=("metres", "sum")).sort_values("metres", ascending=False).round(0)
-            prods["title"] = prods.index.map(SKU_TITLE).astype(str).str[:60]
-            table(prods.reset_index(), hide_index=True, height=260)
-        st.caption(f"{code}: {x['fabric_type'].iloc[0]} · {x['fabric_family'].iloc[0]} · colours: {', '.join(sorted(x['colour'].dropna().unique()))} · "
-                   f"{x['asin'].nunique()} products" + (f" · by marketplace: " + ", ".join(f"{m} {v:,.0f} m" for m, v in x.groupby("marketplace")["metres"].sum()
-                                                                                             .sort_values(ascending=False).items()) if len(MK) > 1 else ""))
+        if bf.empty:
+            st.info(f"No fabric code in this selection: all {total_m:,.0f} m are size-rule estimates (fabric code unknown). "
+                    + ("Blinkit items are known by item id only; give an item a `base_sku` in the item table to book its metres under a fabric code. " if "Blinkit" in MK else "")
+                    + "The *By marketplace* and *By month* tabs show these metres.")
+        else:
+            c1, c2 = st.columns([2, 3])
+            with c1:
+                st.subheader("Top 15 fabric codes, metres")
+                show(hbar(bf["metres"].head(15)))
+            with c2:
+                st.subheader("All fabric codes")
+                table(bf.reset_index(), hide_index=True, height=520, column_config={
+                    "metres": st.column_config.NumberColumn("metres", format="localized"), "growth_4w_%": st.column_config.NumberColumn("4 wk growth %", format="%+.1f")})
+            st.subheader("Look up a fabric code")
+            code = st.selectbox("Fabric code", bf.index.tolist(), key="fab_code")
+            x = known[known["fabric_code"] == code]
+            c1, c2 = st.columns([3, 2])
+            with c1:
+                w = A.weekly_matrix(x.assign(quantity=x["metres"], k="m"), "k").T.reindex(A.complete_weeks(D), fill_value=0)
+                show(lines(w.rename(columns={"m": "metres / week"}), {"metres / week": P["series"][0]}, 260, ytitle="Metres / week"))
+            with c2:
+                prods = x.groupby(["main_sku"]).agg(units=("quantity", "sum"), metres=("metres", "sum")).sort_values("metres", ascending=False).round(0)
+                prods["title"] = prods.index.map(SKU_TITLE).astype(str).str[:60]
+                table(prods.reset_index(), hide_index=True, height=260)
+            st.caption(f"{code}: {x['fabric_type'].iloc[0]} · {x['fabric_family'].iloc[0]} · colours: {', '.join(sorted(x['colour'].dropna().unique()))} · "
+                       f"{x['asin'].nunique()} products" + (f" · by marketplace: " + ", ".join(f"{m} {v:,.0f} m" for m, v in x.groupby("marketplace")["metres"].sum()
+                                                                                                 .sort_values(ascending=False).items()) if len(MK) > 1 else ""))
     if "By marketplace" in T:
         with T["By marketplace"]:
             # every marketplace picked gets a row, including one whose lines have no fabric figure yet (Blinkit until its items are mapped)
@@ -1736,8 +1747,8 @@ elif page == "Fabric consumption":
                     "units_sold": st.column_config.NumberColumn("Units sold", format="localized"), "covered_%": st.column_config.NumberColumn("Covered %", format="%.1f"),
                     "share_of_metres_%": st.column_config.NumberColumn("Share of metres %", format="%.1f"), "fabric_codes": st.column_config.NumberColumn("Fabric codes"),
                     "metres_per_unit": st.column_config.NumberColumn("m / unit", format="%.2f")})
-                st.caption("Covered % = units that reached a fabric figure (sheet, old list or size rule). The rest are outsourced, not on either fabric "
-                           "list, or (Blinkit) sold under an item name the report gives no SKU for.")
+                st.caption("Covered % = units that reached a fabric figure (sheet, old list, size rule or item rule). The rest are outsourced, not on either fabric "
+                           "list, or (Blinkit) items whose size the item table does not give yet.")
                 st.download_button("Download this table (CSV)", bm.round(2).to_csv().encode(), "fabric_by_marketplace.csv", "text/csv", key="fab_mkt_dl_sum")
             _tag = f"{start}_to_{end}"
             st.subheader("Download each marketplace's fabric consumption by SKU")
@@ -1759,21 +1770,32 @@ elif page == "Fabric consumption":
             st.caption("One row per SKU and marketplace for the sidebar period and filters: units sold, metres, fabric code, type, family, colour, size, metres per "
                        "unit and where the figure came from (`fabric_source`). SKUs without a fabric figure are included with their units and `not in sheet`, so "
                        "each file is the whole marketplace, not only the covered part.")
-            _nosku = dm[dm["asin"].str.startswith(MP.KEY_PREFIX + "(no SKU)", na=False)]
+            _nosku = dm[dm["asin"].str.startswith(MP.NOSKU_KEY, na=False)]
             if len(_nosku):
-                _it = _nosku.groupby(["marketplace", "main_sku"]).agg(units=("quantity", "sum"), lines=("quantity", "size"), category=("category", "first"),
-                                                                       asin=("asin", "first")).reset_index()
-                _it["item"] = _it["asin"].map(TITLES).astype(str)
-                _it = _it.sort_values("units", ascending=False)
-                with st.expander(f"Items sold without a SKU on the report · {len(_it)} items, {_it['units'].sum():,} units, no metres yet", expanded=True):
-                    table(_it[["marketplace", "main_sku", "item", "category", "units", "lines"]], hide_index=True, height=min(500, 36 * (len(_it) + 1) + 4),
-                          column_config={"main_sku": st.column_config.TextColumn("Label"), "item": st.column_config.TextColumn("Item as named on the report", width="large"),
-                                         "units": st.column_config.NumberColumn("Units", format="localized")})
-                    st.download_button("Download these items (CSV)", _it[["marketplace", "main_sku", "item", "category", "units", "lines"]].to_csv(index=False).encode(),
-                                       "marketplace_items_without_sku.csv", "text/csv", key="fab_mkt_dl_nosku")
-                    st.markdown(f"These units are counted (they are in *Units sold* above) but carry **no metres**, because the report names the item and gives no SKU. "
-                                f"To make them accurate, write each item's base SKU in the `base_sku` column of `{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` "
-                                "(the item id and name are already there) and run `python -m demand.ingest`; the item then takes that SKU's fabric code and metres.")
+                _it = MP.items_table()
+                _u = _nosku.groupby("asin").agg(units=("quantity", "sum"), metres=("metres", "sum"), fabric_source=("fabric_source", "first"),
+                                                 metres_per_unit=("metres_per_unit", "first"))
+                _it = _it.merge(_u, left_on="asin", right_index=True, how="inner").sort_values("units", ascending=False)
+                _it["metres"] = _it["metres"].round(0)
+                _done = _it[_it["metres_per_unit"].notna()]
+                with st.expander(f"Items known by item id only (Blinkit) · {len(_it)} items, {_it['units'].sum():,} units · {_done['metres'].sum():,.0f} m from "
+                                 f"{len(_done)} items with a size rule, {len(_it) - len(_done)} items still without a size", expanded=True):
+                    table(_it[["marketplace", "item_id", "upc", "product_name", "category", "fabric_product", "size", "pieces", "metres_per_unit", "units", "metres", "status", "basis", "base_sku"]],
+                          hide_index=True, height=min(560, 36 * (len(_it) + 1) + 4), column_config={
+                              "item_id": st.column_config.TextColumn("Item id"), "upc": st.column_config.TextColumn("UPC"),
+                              "product_name": st.column_config.TextColumn("Item as named on the report", width="large"),
+                              "fabric_product": st.column_config.TextColumn("Sheet product"), "metres_per_unit": st.column_config.NumberColumn("m / unit", format="%.2f"),
+                              "units": st.column_config.NumberColumn("Units", format="localized"), "metres": st.column_config.NumberColumn("Metres", format="localized"),
+                              "basis": st.column_config.TextColumn("Basis", width="large"), "base_sku": st.column_config.TextColumn("Base SKU (optional)")})
+                    st.download_button("Download the item table (CSV)", _it.drop(columns=["asin"]).to_csv(index=False).encode(), "marketplace_items.csv", "text/csv", key="fab_mkt_dl_nosku")
+                    st.markdown("Blinkit identifies products by **item id and UPC**, never by SKU, so these items are read through the item table "
+                                f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` instead of the Master SKU sheet. The tool fills the table from the item "
+                                "name: curtains get their length from the trade words *Door* = 7 ft, *Window* = 5 ft, *Long Door* = 9 ft (HomeMonde's own D / W / LD codes) "
+                                "and 2 pieces (Blinkit's price per item is the pack-of-2 price seen on Amazon, not the single-piece price); bedsheets and table covers are one "
+                                "piece. Metres = the fabric sheet's metres per piece for that product and size × pieces, shown as **item: size rule** with the fabric code unknown. "
+                                "Items whose name gives no size (pillow, cushion and bolster covers, fitted bedsheets) show *needs size / pieces*: write the size the sheet "
+                                "uses (e.g. `16 x 16 Inch`, `78 x 72 Inch`) and the pieces in the CSV, or a `base_sku` to tie the item to that SKU's exact fabric code and "
+                                "metres, then run `python -m demand.ingest`. Any pre-filled cell can be corrected the same way.")
             _kc = known[~known["fabric_code"].isin([FB.UNKNOWN, "(none)"])]
             st.subheader("Top 20 fabric codes by marketplace, metres")
             pc = _kc.pivot_table(index="fabric_code", columns="marketplace", values="metres", aggfunc="sum", fill_value=0)
@@ -1830,9 +1852,9 @@ elif page == "Fabric consumption":
                 st.caption("A seller SKU is read through the Master SKU sheet to its base SKU, then tied to the Amazon listing that sells the same product "
                            "(seller SKU, base SKU or any alias of the base), so it gets the fabric facts that listing already has; products never sold on Amazon "
                            "go through the fabric sheet by SKU and the size rule on their own. **Not in Master** = the seller SKU is used as it is. "
-                           "**No SKU on report** = Blinkit names the item but gives no SKU: fill in the base SKU for each item in "
-                           f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` and run `python -m demand.ingest`"
-                           + (f" ({_items[1]} of {_items[0]} items filled so far)." if _items else "."))
+                           "**No SKU on report** = Blinkit, which works by item id and UPC: those items are read through the item table "
+                           f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}` (see the item section above)"
+                           + (f"; {_items[1]} of {_items[0]} items are tied to a base SKU." if _items else "."))
     with T["By type & family"]:
         c1, c2 = st.columns(2)
         with c1:
@@ -1954,7 +1976,7 @@ elif page == "Fabric consumption":
     with T["Coverage & sheet"]:
         st.subheader("Units with a fabric figure, by category")
         table(cov.reset_index())
-        miss = pf[pf["fabric_source"].isin(["not in sheet", "inferred: size rule", FB.OLD_RULE, FB.OLD_NOSIZE])].copy()
+        miss = pf[pf["fabric_source"].isin(["not in sheet", "inferred: size rule", FB.ITEM_RULE, FB.OLD_RULE, FB.OLD_NOSIZE])].copy()
         _units_all = D_ALL.groupby("asin")["quantity"].sum()
         if len(MP_D):
             _units_all = _units_all.add(MP_D[MP_D["marketplace"].isin(MK)].groupby("asin")["quantity"].sum(), fill_value=0)
@@ -2350,8 +2372,9 @@ elif page == "Data":
                          if _m.get("conflicts") else ""))
         if _mi.get("items_without_sku"):
             _n, _f = _mi["items_without_sku"]
-            _line += (f"  \n· {_n} items a report names without a SKU (Blinkit, a few website lines): {_f} given a base SKU so far in "
-                      f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}`; fill the `base_sku` column and run `python -m demand.ingest`")
+            _line += (f"  \n· Blinkit works by item id and UPC, not SKU: {_n} items (Blinkit, plus a few website lines) are read through "
+                      f"`{cfg.MARKETPLACE_ITEMS_CSV.relative_to(cfg.ROOT).as_posix()}`: {_mi.get('items_by_rule', 0)} get metres by the size rule from the size and pieces "
+                      f"the tool read off the item name, {_f} are tied to a base SKU, the rest need a size (see the Fabric page, *By marketplace* tab)")
         st.markdown(_line)
         if len(MP_ALL):
             with st.expander("How the marketplace SKUs were matched to products"):

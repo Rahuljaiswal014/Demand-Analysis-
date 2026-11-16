@@ -99,7 +99,7 @@ def fabric_plan(d, lc, products):
     top_codes = FB.by_fabric(dm).head(20)
     end = d["date"].max()
     recent = dm[dm["date"] > end - pd.Timedelta(weeks=8)]
-    unknown = (recent[recent["fabric_source"] == "inferred: size rule"].groupby("main_sku").agg(units_8w=("quantity", "sum"), metres_8w=("metres", "sum"))
+    unknown = (recent[recent["fabric_source"].isin(["inferred: size rule", "item: size rule"])].groupby("main_sku").agg(units_8w=("quantity", "sum"), metres_8w=("metres", "sum"))
                .sort_values("metres_8w", ascending=False).head(15).round(0))
     return {
         "12-week fabric requirement per fabric code (metres): baseline, festive scenario, last 12 weeks actual": req.head(30),

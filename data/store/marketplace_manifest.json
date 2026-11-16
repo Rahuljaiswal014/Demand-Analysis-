@@ -4,10 +4,6 @@
       "size": 37480,
       "mtime": 1794545350
     },
-    "Blinkit Sales Report (Oct).xlsx": {
-      "size": 286347,
-      "mtime": 1794545350
-    },
     "Flipkart Sales Report (Oct).xlsx": {
       "size": 528386,
       "mtime": 1794545350
@@ -15,6 +11,10 @@
     "Myntra Sales Report (Oct).csv": {
       "size": 7141849,
       "mtime": 1794545350
+    },
+    "October BLinkit Order data 2.xlsx": {
+      "size": 303518,
+      "mtime": 1794828904
     },
     "Website Sales Report (Oct).csv": {
       "size": 2184172,
@@ -26,8 +26,8 @@
       "name": "Master SKU Sheet.xlsx"
     },
     "__items__": {
-      "size": 2736,
-      "mtime": 1794648899
+      "size": 1433,
+      "mtime": 1794829207
     }
   },
   "reports": {
@@ -37,13 +37,6 @@
       "units": 160,
       "from": "2026-10-01",
       "to": "2026-10-31"
-    },
-    "Blinkit Sales Report (Oct).xlsx": {
-      "marketplace": "Blinkit",
-      "rows": 1993,
-      "units": 2156,
-      "from": "2026-10-01",
-      "to": "2026-11-01"
     },
     "Flipkart Sales Report (Oct).xlsx": {
       "marketplace": "Flipkart",
@@ -56,6 +49,13 @@
       "marketplace": "Myntra",
       "rows": 11335,
       "units": 9501,
+      "from": "2026-10-01",
+      "to": "2026-10-31"
+    },
+    "October BLinkit Order data 2.xlsx": {
+      "marketplace": "Blinkit",
+      "rows": 1855,
+      "units": 2007,
       "from": "2026-10-01",
       "to": "2026-10-31"
     },
@@ -207,7 +207,8 @@
     ]
   },
   "items_without_sku": [
-    34,
+    7,
     0
-  ]
+  ],
+  "items_by_rule": 3
 }
